@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "kernel/overlay/drivers/soc/samsung/exynos9820-sleep-seq.h",
+      "sha256": "30b1f3759944055b786e55266958d2c9aae53219ed1a75a12daeebd2dd9bcb3c",
+      "resolved_codes": [
+        "provenance-review"
+      ],
+      "inputs": [
+        {
+          "path": "scripts/gen-exynos9820-sleep-seq.py",
+          "sha256": "5b864babdf0b1040f9975c2896895a9a158646fba6a8c3ead30d64bba644f046"
+        }
+      ],
+      "evidence": "Byte-identical regeneration verified from Samsung SM-G973F_EUR_12_Opensource.zip (archive SHA-256 9ffe68b6789d5d0c2ff142faf70d770d2543664e4cacf6d7272d9a7d6628b354), kernel/drivers/soc/samsung/cal-if/exynos9820/flexpmu_cal_system_exynos9820.h (SHA-256 187e78ce5724db88b9b6ad74f27a57d28eaa9ad1a01932ca60ba0910c0e7b517). The package kernel/COPYING supplies GPLv2, SHA-256 af8067302947c01fd9eee72befa54c7e3ef8a48fecde7fd71277f2290b2bf0f7. This is a register-sequence table, not a sensor firmware payload. Package origin: https://opensource.samsung.com/ . Exact regeneration command and review limits are documented in docs/public/PROVENANCE.md."
+    },
+    {
+      "path": "userspace/vowifi/swu_emulator.py",
+      "sha256": "ce4aa9dc1534f45738e5581ee9dd1279134a8c114c11acd7286eacac3f47d065",
+      "resolved_codes": [
+        "subscriber-identifier",
+        "provenance-review"
+      ],
+      "evidence": "The fixed IMEI and IMEISV constants are byte-identical to the public upstream example in fasferraz/SWu-IKEv2 at bf5d258b7298db65e64b43065b153325eba47a9e, swu_emulator.py. They are example literals, not captured subscriber data. This decision does not approve their operational use, waive license review, or approve other content. Source: https://github.com/fasferraz/SWu-IKEv2/blob/bf5d258b7298db65e64b43065b153325eba47a9e/swu_emulator.py Exact upstream source SHA-256 bd564620ff1deaac1f19041c32223e707fb4e277998759d3aef6847bceef4872. The local GPLv3 LICENSE is byte-identical to upstream; applying patches/vowifi/s10-swu-integration.patch to that immutable upstream source reproduces this complete modified file byte-for-byte. This distribution selects GPL version 3 and does not claim a GPLv2 or later-version grant for upstream code.",
+      "inputs": [
+        {
+          "path": "patches/vowifi/s10-swu-integration.patch",
+          "sha256": "cf85d780e77425db875f38c32e23e84c5493d10cc7722fb11d73f54086b84235"
+        },
+        {
+          "path": "userspace/vowifi/LICENSE",
+          "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+        }
+      ]
+    },
+    {
+      "path": "userspace/vowifi/test-ims-signalling.py",
+      "sha256": "4b54ee0c175dbfc51b2969bad322be33e3f583746d2fbfd79b94b4de53359ed2",
+      "resolved_codes": [
+        "subscriber-identifier"
+      ],
+      "evidence": "Reviewed synthetic unit-test fixture: the Ims object is constructed with __new__, the fixture uses the documentation IPv6 prefix 2001:db8::/32 and ims.example.invalid, and network/SIM behavior is mocked. These literals are not captured subscriber records. The source now labels the fixture explicitly; changed contents require another review."
+    },
+    {
+      "path": "dts/s10-production-20261026.dts",
+      "sha256": "d5b085bca5f1e0ef40bd8c7767382f3057f25a922a0655b673c2f23f0f5de3eb",
+      "resolved_codes": [
+        "provenance-review"
+      ],
+      "inputs": [
+        {
+          "path": "u-boot-port/exynos9820-beyond1lte.dts",
+          "sha256": "755c164de83c025abb1f8eb2001d3a3f361e70d4f9a23e5054fd718ca8df0bee"
+        },
+        {
+          "path": "u-boot-port/exynos9820-common.dtsi",
+          "sha256": "c06a0658fbe8be2d55de5fe27fc53391333ec3a828698cd6fb65d3e6305858c0"
+        },
+        {
+          "path": "u-boot-port/exynos9820.dtsi",
+          "sha256": "a2d5409b976c0dc21b1920d0eebe833f40a3600bab14452f7aa76c9e7475942a"
+        },
+        {
+          "path": "u-boot-port/exynos9820-pinctrl.dtsi",
+          "sha256": "983ee871f94f25bed14e34eca25c9140038c4be4bc1721ce36354cf55df21f3a"
+        },
+        {
+          "path": "u-boot-port/exynos9820-tmu.dtsi",
+          "sha256": "23db6ad95bcccc1dc6f5745a8d1e5b4b0941989446129a312f9555ac68df5705"
+        }
+      ],
+      "evidence": "The original captured baseline was compared property-by-property with a fresh DTS compilation from chiffathefox/u-boot at dec4927b4ad5b789b0854050096fc80250627de7: all 311 source nodes match, with only a runtime /memory node and the serial-number/u-boot,version boot properties added in the capture. No baseline nodes were removed. The existing project history records the local GPLv2 bring-up transformations from this capture. Original upstream 2025/2026 chiffathefox notices are restored; GPL version 2 is selected, consistent with the GPL-only included TMU source. Device serial and stale boot pointers are absent from the publication inputs. Adding the notice was verified to leave each compiled DTB byte-identical. This review does not approve the old raw capture or Git history for publication. See docs/public/PROVENANCE.md."
+    },
+    {
+      "path": "dts/s10-sleep-debug-20261027.dts",
+      "sha256": "0d68ae39b2159e2e70a6e3186be35504929314fe9550b821090ef7b554a8570e",
+      "resolved_codes": [
+        "provenance-review"
+      ],
+      "inputs": [
+        {
+          "path": "u-boot-port/exynos9820-beyond1lte.dts",
+          "sha256": "755c164de83c025abb1f8eb2001d3a3f361e70d4f9a23e5054fd718ca8df0bee"
+        },
+        {
+          "path": "u-boot-port/exynos9820-common.dtsi",
+          "sha256": "c06a0658fbe8be2d55de5fe27fc53391333ec3a828698cd6fb65d3e6305858c0"
+        },
+        {
+          "path": "u-boot-port/exynos9820.dtsi",
+          "sha256": "a2d5409b976c0dc21b1920d0eebe833f40a3600bab14452f7aa76c9e7475942a"
+        },
+        {
+          "path": "u-boot-port/exynos9820-pinctrl.dtsi",
+          "sha256": "983ee871f94f25bed14e34eca25c9140038c4be4bc1721ce36354cf55df21f3a"
+        },
+        {
+          "path": "u-boot-port/exynos9820-tmu.dtsi",
+          "sha256": "23db6ad95bcccc1dc6f5745a8d1e5b4b0941989446129a312f9555ac68df5705"
+        }
+      ],
+      "evidence": "The original captured baseline was compared property-by-property with a fresh DTS compilation from chiffathefox/u-boot at dec4927b4ad5b789b0854050096fc80250627de7: all 311 source nodes match, with only a runtime /memory node and the serial-number/u-boot,version boot properties added in the capture. No baseline nodes were removed. The existing project history records the local GPLv2 bring-up transformations from this capture. Original upstream 2025/2026 chiffathefox notices are restored; GPL version 2 is selected, consistent with the GPL-only included TMU source. Device serial and stale boot pointers are absent from the publication inputs. Adding the notice was verified to leave each compiled DTB byte-identical. This review does not approve the old raw capture or Git history for publication. See docs/public/PROVENANCE.md."
+    }
+  ]
+}

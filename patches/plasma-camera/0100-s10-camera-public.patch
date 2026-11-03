@@ -1,0 +1,2033 @@
+# SPDX-License-Identifier: GPL-3.0-or-later AND GPL-2.0-or-later AND BSD-3-Clause
+# S10 camera integration against Plasma Camera 29d46b59e2159f90b0eeb9bca94906e667cfaecf.
+# Original port modifications follow each affected upstream file license.
+# Existing upstream notices are retained. See docs/public/PROVENANCE.md.
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -38,6 +38,7 @@
+     Svg
+     QuickControls2
+     Sensors
++    Concurrent
+ )
+ 
+ if(NOT ANDROID)
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -12,6 +12,7 @@
+     plasmacamera/image.cpp
+     plasmacamera/path.cpp
+     plasmacamera/settings.cpp
++    photoprocessing.cpp
+     plasmacamera/worker.cpp
+     resources.qrc
+ )
+@@ -23,6 +24,7 @@
+ target_link_libraries(
+         plasma-camera
+         Qt::Core
++        Qt::Concurrent
+         Qt::Qml
+         Qt::Quick
+         Qt::Svg
+--- a/src/camerasettings.kcfg
++++ b/src/camerasettings.kcfg
+@@ -17,7 +17,7 @@
+             <default>24</default>
+         </entry>
+         <entry key="videoRecordingQuality" type="int">
+-            <default>2</default> <!-- PlasmaCameraManager::NormalQuality -->
++            <default>4</default> <!-- PlasmaCameraManager::VeryHighQuality -->
+         </entry>
+         <entry key="videoResolution" type="int">
+             <default>0</default> <!-- PlasmaCameraManager::ResolutionAuto -->
+--- a/src/contents/ui/camera/CameraExtraControls.qml
++++ b/src/contents/ui/camera/CameraExtraControls.qml
+@@ -4,11 +4,9 @@
+ import QtQuick
+ import QtQuick.Controls as QQC2
+ import QtQuick.Layouts
+-import QtMultimedia
+ 
+ import org.kde.kirigami as Kirigami
+ import org.kde.plasmacamera
+-import org.kde.kirigamiaddons.components as Components
+ 
+ Rectangle {
+     id: root
+@@ -16,69 +14,317 @@
+     required property bool audioRecordingEnabled
+     required property bool audioRecordingEnabledShown
+     required property bool exposureValueEnabled
++    required property PlasmaCamera camera
+ 
+     signal audioEnabledChangeRequested(enabled: bool)
+     signal exposureValueRequested(value: real)
+ 
+-    height: controlsLayout.implicitHeight
+-    color: Qt.rgba(0, 0, 0, 0.3)
++    property bool advancedControlsShown: false
++
++    height: controlsLayout.implicitHeight + Kirigami.Units.smallSpacing
++    color: Qt.rgba(0.035, 0.045, 0.055, 0.72)
++    radius: Kirigami.Units.gridUnit * 0.7
++    clip: true
++
++    Kirigami.Theme.inherit: false
++    Kirigami.Theme.colorSet: Kirigami.Theme.Complementary
+ 
+     ColumnLayout {
+         id: controlsLayout
+-        spacing: Kirigami.Units.smallSpacing
+         anchors.left: parent.left
+         anchors.right: parent.right
+         anchors.top: parent.top
+-
+-        Kirigami.Theme.inherit: false
+-        Kirigami.Theme.colorSet: Kirigami.Theme.Complementary
++        anchors.margins: Kirigami.Units.smallSpacing
++        spacing: Kirigami.Units.smallSpacing
+ 
+         RowLayout {
+-            id: controlsRow
+-
+-            spacing: Kirigami.Units.largeSpacing
+             Layout.fillWidth: true
+-            Layout.topMargin: Kirigami.Units.largeSpacing
+-            Layout.bottomMargin: Kirigami.Units.largeSpacing
++            spacing: Kirigami.Units.smallSpacing
+ 
+             Item { Layout.fillWidth: true }
+ 
+             QQC2.ToolButton {
+-                id: audioRecordingButton
+-                icon.name: root.audioRecordingEnabled ? 'microphone-sensitivity-high-symbolic' : 'microphone-sensitivity-muted-symbolic'
+-                icon.color: 'white'
++                icon.name: root.audioRecordingEnabled ? "microphone-sensitivity-high-symbolic" : "microphone-sensitivity-muted-symbolic"
+                 text: root.audioRecordingEnabled ? i18n("Microphone is enabled") : i18n("Microphone is disabled")
+                 display: QQC2.ToolButton.IconOnly
+                 visible: root.audioRecordingEnabledShown
+                 onClicked: root.audioEnabledChangeRequested(!root.audioRecordingEnabled)
+-
+                 QQC2.ToolTip.visible: down
+                 QQC2.ToolTip.text: text
+             }
+ 
+             QQC2.ToolButton {
+-                id: exposureControlsButton
+-                icon.name: 'lighttable' // TODO: find better icon
+-                icon.color: "white"
+-                text: i18n("Exposure")
++                icon.name: "lighttable"
++                text: i18n("Exposure compensation")
+                 display: QQC2.ToolButton.IconOnly
+                 visible: root.exposureValueEnabled
+                 onClicked: exposureSelectStrip.shown = !exposureSelectStrip.shown
+-
+                 QQC2.ToolTip.visible: down
+                 QQC2.ToolTip.text: text
+             }
+ 
++            QQC2.ToolButton {
++                icon.name: root.advancedControlsShown ? "go-up" : "settings-configure"
++                text: root.advancedControlsShown ? i18n("Hide camera controls") : i18n("Camera controls")
++                display: QQC2.ToolButton.IconOnly
++                onClicked: root.advancedControlsShown = !root.advancedControlsShown
++                QQC2.ToolTip.visible: down
++                QQC2.ToolTip.text: text
++            }
++
+             Item { Layout.fillWidth: true }
+         }
+ 
+         ExposureSelectStrip {
+             id: exposureSelectStrip
+             visible: root.exposureValueEnabled
+-            shown: false // Set by exposureControlsButton
+-
++            shown: false
+             onExposureValueRequested: (value) => root.exposureValueRequested(value)
+             Layout.fillWidth: true
+         }
++
++        Flickable {
++            id: settingsScroller
++            visible: root.advancedControlsShown
++            Layout.fillWidth: true
++            Layout.preferredHeight: Math.min(settingsCard.height,
++                                              root.parent ? root.parent.height * 0.52 : settingsCard.height)
++            contentHeight: settingsCard.height
++            clip: true
++            boundsBehavior: Flickable.StopAtBounds
++
++            Rectangle {
++                id: settingsCard
++                width: settingsScroller.width
++                height: settingsContent.implicitHeight + Kirigami.Units.largeSpacing * 2
++                radius: Kirigami.Units.gridUnit
++                color: Qt.rgba(0.055, 0.065, 0.075, 0.94)
++
++                ColumnLayout {
++                    id: settingsContent
++                    anchors.fill: parent
++                    anchors.margins: Kirigami.Units.largeSpacing
++                    spacing: Kirigami.Units.smallSpacing
++
++                    QQC2.Label {
++                        text: i18n("Framing")
++                        font.weight: Font.DemiBold
++                        opacity: 0.85
++                    }
++
++                    RowLayout {
++                        Layout.fillWidth: true
++                        QQC2.Label { text: i18n("Zoom"); Layout.preferredWidth: Kirigami.Units.gridUnit * 5 }
++                        RowLayout {
++                            spacing: Kirigami.Units.smallSpacing
++                            Repeater {
++                                model: [1, 2, 3, 4]
++                                delegate: QQC2.ToolButton {
++                                    required property int modelData
++                                    text: modelData + "×"
++                            checkable: true
++                                    checked: Math.abs(root.camera.digitalZoom - modelData) < 0.06
++                                    onClicked: root.camera.digitalZoom = modelData
++                                }
++                            }
++                        }
++                        Item { Layout.fillWidth: true }
++                        QQC2.Label { text: Number(root.camera.digitalZoom).toFixed(1) + "×" }
++                    }
++
++                    QQC2.Label {
++                        text: i18n("Focus")
++                        font.weight: Font.DemiBold
++                        opacity: 0.85
++                        visible: root.camera.focusAvailable || root.camera.focusPointAvailable
++                    }
++
++                    RowLayout {
++                        visible: root.camera.focusAvailable
++                        Layout.fillWidth: true
++                        QQC2.Button {
++                            text: i18n("Auto")
++                            checkable: true
++                            checked: root.camera.focusMode === 1
++                            onClicked: {
++                                root.camera.focusMode = 1;
++                                root.camera.triggerAutofocus();
++                            }
++                        }
++                        QQC2.Button {
++                            text: i18n("Continuous")
++                            checkable: true
++                            checked: root.camera.focusMode === 2
++                            onClicked: root.camera.focusMode = 2
++                        }
++                        QQC2.Button {
++                            text: i18n("Manual")
++                            checkable: true
++                            checked: root.camera.focusMode === 0
++                            onClicked: root.camera.focusMode = 0
++                        }
++                    }
++
++                    QQC2.Label {
++                        visible: root.camera.focusPointAvailable
++                        text: i18n("Tap the preview to focus on that point")
++                        opacity: 0.8
++                        wrapMode: Text.Wrap
++                        Layout.fillWidth: true
++                    }
++
++                    RowLayout {
++                        visible: root.camera.focusPositionAvailable && root.camera.focusMode === 0
++                        Layout.fillWidth: true
++                        QQC2.Label { text: i18n("Manual focus"); Layout.preferredWidth: Kirigami.Units.gridUnit * 5 }
++                        QQC2.Slider {
++                            Layout.fillWidth: true
++                            from: root.camera.focusPositionMin
++                            to: root.camera.focusPositionMax
++                            stepSize: 1
++                            value: root.camera.focusPosition
++                            onMoved: root.camera.focusPosition = Math.round(value)
++                        }
++                        QQC2.Label { text: root.camera.focusPosition }
++                    }
++
++                    QQC2.Label {
++                        text: i18n("Exposure")
++                        font.weight: Font.DemiBold
++                        opacity: 0.85
++                        visible: root.camera.isoAvailable || root.camera.exposureTimeAvailable
++                    }
++
++                    RowLayout {
++                        visible: root.camera.isoAvailable
++                        Layout.fillWidth: true
++                        QQC2.Label { text: i18n("ISO approx."); Layout.preferredWidth: Kirigami.Units.gridUnit * 5 }
++                        QQC2.Slider {
++                            Layout.fillWidth: true
++                            enabled: root.camera.isoManual
++                            from: root.camera.isoMin
++                            to: root.camera.isoMax
++                            stepSize: 1
++                            value: root.camera.iso
++                            onMoved: root.camera.iso = Math.round(value)
++                        }
++                        QQC2.Label { text: root.camera.isoManual ? root.camera.iso : i18n("Auto") }
++                        QQC2.ToolButton {
++                            text: root.camera.isoManual ? i18n("Auto") : i18n("Manual")
++                            onClicked: root.camera.isoManual ? root.camera.resetIso() : root.camera.iso = root.camera.iso
++                        }
++                    }
++
++                    RowLayout {
++                        visible: root.camera.exposureTimeAvailable
++                        Layout.fillWidth: true
++                        QQC2.Label { text: i18n("Shutter"); Layout.preferredWidth: Kirigami.Units.gridUnit * 5 }
++                        QQC2.Slider {
++                            Layout.fillWidth: true
++                            enabled: root.camera.exposureTimeManual
++                            from: root.camera.exposureTimeMin / 1000.0
++                            to: root.camera.exposureTimeMax / 1000.0
++                            stepSize: 1
++                            value: root.camera.exposureTime / 1000.0
++                            onMoved: root.camera.exposureTime = Math.round(value * 1000)
++                        }
++                        QQC2.Label {
++                            text: root.camera.exposureTimeManual
++                                ? (root.camera.exposureTime >= 1000000
++                                    ? (root.camera.exposureTime / 1000000).toFixed(1) + " s"
++                                    : "1/" + Math.round(1000000 / root.camera.exposureTime) + " s")
++                                : i18n("Auto")
++                        }
++                        QQC2.ToolButton {
++                            text: root.camera.exposureTimeManual ? i18n("Auto") : i18n("Manual")
++                            onClicked: root.camera.exposureTimeManual ? root.camera.resetExposureTime() : root.camera.exposureTime = root.camera.exposureTime
++                        }
++                    }
++
++                    QQC2.Label {
++                        visible: root.camera.whiteBalanceAvailable
++                        text: i18n("White balance")
++                        font.weight: Font.DemiBold
++                    }
++                    QQC2.Switch {
++                        visible: root.camera.whiteBalanceAvailable
++                        text: i18n("Automatic white balance")
++                        checked: root.camera.whiteBalanceAuto
++                        onToggled: root.camera.whiteBalanceAuto = checked
++                    }
++                    Repeater {
++                        model: ["Red", "Blue"]
++                        delegate: RowLayout {
++                            required property string modelData
++                            visible: root.camera.whiteBalanceAvailable && !root.camera.whiteBalanceAuto
++                            Layout.fillWidth: true
++                            QQC2.Label { text: modelData === "Red" ? i18n("Red") : i18n("Blue") }
++                            QQC2.Slider {
++                                Layout.fillWidth: true
++                                from: 0.25
++                                to: 4.0
++                                stepSize: 0.05
++                                value: modelData === "Red" ? root.camera.whiteBalanceRed : root.camera.whiteBalanceBlue
++                                onMoved: {
++                                    if (modelData === "Red") root.camera.whiteBalanceRed = value
++                                    else root.camera.whiteBalanceBlue = value
++                                }
++                            }
++                        }
++                    }
++
++                    QQC2.Switch {
++                        text: i18n("Reduce noise in photos")
++                        checked: root.camera.denoisePhotos
++                        onToggled: root.camera.denoisePhotos = checked
++                    }
++                    QQC2.Label {
++                        text: i18n("Image")
++                        font.weight: Font.DemiBold
++                        opacity: 0.85
++                        visible: root.camera.contrastAvailable || root.camera.saturationAvailable
++                    }
++
++                    RowLayout {
++                        visible: root.camera.contrastAvailable
++                        Layout.fillWidth: true
++                        QQC2.Label { text: i18n("Contrast"); Layout.preferredWidth: Kirigami.Units.gridUnit * 5 }
++                        QQC2.Slider {
++                            Layout.fillWidth: true
++                            from: 0.0
++                            to: 2.0
++                            stepSize: 0.05
++                            value: root.camera.contrast
++                            onMoved: root.camera.contrast = value
++                        }
++                        QQC2.Label { text: Number(root.camera.contrast).toFixed(2) }
++                    }
++
++                    RowLayout {
++                        visible: root.camera.saturationAvailable
++                        Layout.fillWidth: true
++                        QQC2.Label { text: i18n("Saturation"); Layout.preferredWidth: Kirigami.Units.gridUnit * 5 }
++                        QQC2.Slider {
++                            Layout.fillWidth: true
++                            from: 0.0
++                            to: 2.0
++                            stepSize: 0.05
++                            value: root.camera.saturation
++                            onMoved: root.camera.saturation = value
++                        }
++                        QQC2.Label { text: Number(root.camera.saturation).toFixed(2) }
++                    }
++
++                    QQC2.Label {
++                        visible: root.camera.isoAvailable
++                        text: i18n("Aperture is not exposed by this camera driver")
++                        opacity: 0.7
++                        font: Kirigami.Theme.smallFont
++                        wrapMode: Text.Wrap
++                        Layout.fillWidth: true
++                    }
++                }
++            }
++        }
+     }
+ }
+--- a/src/contents/ui/camera/CameraPage.qml
++++ b/src/contents/ui/camera/CameraPage.qml
+@@ -33,6 +33,7 @@
+ 
+     // The current mode of capturing the camera is going to do
+     property int captureMode: CameraPage.CaptureMode.Photo
++    onCaptureModeChanged: camera.setFullResolutionPreview(captureMode === CameraPage.CaptureMode.Video)
+ 
+     property PlasmaCameraManager captureSession: PlasmaCameraManager {
+         id: captureSession
+@@ -121,6 +122,7 @@
+             audioRecordingEnabled: root.captureSession.audioRecordingEnabled
+             audioRecordingEnabledShown: root.captureMode === CameraPage.CaptureMode.Video && !root.captureSession.isRecordingVideo && !root.captureSession.isSavingVideo
+             exposureValueEnabled: root.camera.exposureValueAvailable
++            camera: root.camera
+ 
+             onExposureValueRequested: (value) => root.camera.exposureValue = value;
+             onAudioEnabledChangeRequested: (enabled) => root.captureSession.audioRecordingEnabled = enabled;
+--- a/src/contents/ui/camera/Viewfinder.qml
++++ b/src/contents/ui/camera/Viewfinder.qml
+@@ -19,8 +19,12 @@
+     property real bottomMargin: 0
+ 
+     property alias videoSink: viewfinder.videoSink
++    property real reticleX: 0
++    property real reticleY: 0
++    property bool reticleVisible: false
+ 
+     color: "black"
++    clip: true
+ 
+     Kirigami.Heading {
+         anchors.centerIn: parent
+@@ -34,5 +38,58 @@
+         visible: root.camera.available
+         width: parent.width
+         height: parent.height
++        scale: root.camera.digitalZoom
++        transformOrigin: Item.Center
++
++        TapHandler {
++            enabled: root.camera.focusPointAvailable
++            onTapped: (eventPoint, button) => {
++                const bounds = viewfinder.contentRect;
++                if (bounds.width <= 0 || bounds.height <= 0)
++                    return;
++
++                let x = (eventPoint.position.x - bounds.x) / bounds.width;
++                let y = (eventPoint.position.y - bounds.y) / bounds.height;
++                if (x < 0 || x > 1 || y < 0 || y > 1)
++                    return;
++
++                const zoom = root.camera.digitalZoom;
++                x = 0.5 + (x - 0.5) / zoom;
++                y = 0.5 + (y - 0.5) / zoom;
++                if (root.camera.mirrorOutput)
++                    x = 1 - x;
++
++                let oldX = x;
++                switch (root.camera.softwareRotationDegrees) {
++                case 90: x = y; y = 1 - oldX; break;
++                case 180: x = 1 - x; y = 1 - y; break;
++                case 270: x = 1 - y; y = oldX; break;
++                }
++
++                root.reticleX = eventPoint.position.x;
++                root.reticleY = eventPoint.position.y;
++                root.reticleVisible = true;
++                reticleTimer.restart();
++                root.camera.focusAt(Math.round(x * 1000), Math.round(y * 1000));
++            }
++        }
+     }
+-}
+\ No newline at end of file
++
++    Rectangle {
++        x: root.reticleX - width / 2
++        y: root.reticleY - height / 2
++        width: Kirigami.Units.gridUnit * 2
++        height: width
++        radius: width / 2
++        color: "transparent"
++        border.color: Kirigami.Theme.highlightColor
++        border.width: 2
++        visible: root.reticleVisible
++    }
++
++    Timer {
++        id: reticleTimer
++        interval: 1400
++        onTriggered: root.reticleVisible = false
++    }
++}
+--- /dev/null
++++ b/src/photoprocessing.cpp
+@@ -0,0 +1,75 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include "photoprocessing.h"
++#include <algorithm>
++#include <array>
++#include <thread>
++#include <vector>
++
++QImage S10Photo::preview(const QImage &input, int maximumEdge)
++{
++    if (std::max(input.width(), input.height()) <= maximumEdge)
++        return input.copy(); // The input can be a non-owning DMA view.
++    // Scaling allocates owned pixels; a queued GUI frame must never retain DMA.
++    return input.scaled(maximumEdge, maximumEdge, Qt::KeepAspectRatio, Qt::FastTransformation);
++}
++
++QImage S10Photo::denoise(const QImage &input)
++{
++    if (input.isNull())
++        return {};
++    const QImage source = input.convertToFormat(QImage::Format_RGB32);
++    QImage output = source.copy(); // Keep borders and metadata, never modify the input.
++    if (source.width() < 3 || source.height() < 3)
++        return output;
++    const std::array<int, 256> weights = [] {
++        std::array<int, 256> table{};
++        for (int d = 0; d < 256; ++d)
++            table[d] = 65536 / (256 + d * d);
++        return table;
++    }();
++    const int height = source.height(), width = source.width();
++    const auto *src = source.constBits();
++    auto *dst = output.bits(); // Detach once before parallel workers access disjoint rows.
++    const auto srcStride = source.bytesPerLine(), dstStride = output.bytesPerLine();
++    auto process = [&](int begin, int end) {
++        for (int y = begin; y < end; ++y) {
++            auto *out = reinterpret_cast<QRgb *>(dst + y * dstStride);
++            const auto *row = reinterpret_cast<const QRgb *>(src + y * srcStride);
++            for (int x = 1; x < width - 1; ++x) {
++                const int r = qRed(row[x]), g = qGreen(row[x]), b = qBlue(row[x]);
++                int red = 0, green = 0, blue = 0, total = 0;
++                for (int dy = -1; dy <= 1; ++dy) {
++                    const auto *near = reinterpret_cast<const QRgb *>(src + (y + dy) * srcStride);
++                    for (int dx = -1; dx <= 1; ++dx) {
++                        const QRgb p = near[x + dx];
++                        const int difference = std::max({std::abs(qRed(p) - r),
++                            std::abs(qGreen(p) - g), std::abs(qBlue(p) - b)});
++                        const int spatial = (dx == 0 ? 2 : 1) * (dy == 0 ? 2 : 1);
++                        const int weight = weights[difference] * spatial;
++                        red += weight * qRed(p);
++                        green += weight * qGreen(p);
++                        blue += weight * qBlue(p);
++                        total += weight;
++                    }
++                }
++                red = (red + total / 2) / total;
++                green = (green + total / 2) / total;
++                blue = (blue + total / 2) / total;
++                // Preserve some luminance texture; smooth chroma more strongly.
++                const int correction = ((r + 2 * g + b) - (red + 2 * green + blue)) / 12;
++                out[x] = qRgb(std::clamp(red + correction, 0, 255),
++                              std::clamp(green + correction, 0, 255),
++                              std::clamp(blue + correction, 0, 255));
++            }
++        }
++    };
++    const int count = height >= 256 ? 4 : 1;
++    std::vector<std::jthread> workers;
++    for (int i = 1; i < count; ++i)
++        workers.emplace_back(process, 1 + (height - 2) * i / count,
++                             1 + (height - 2) * (i + 1) / count);
++    process(1, 1 + (height - 2) / count);
++    for (auto &worker : workers)
++        worker.join();
++    return output;
++}
+--- /dev/null
++++ b/src/photoprocessing.h
+@@ -0,0 +1,9 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <QImage>
++
++namespace S10Photo {
++// Mild spatial denoising of an owned RGB photograph. Never touches DMA memory.
++QImage denoise(const QImage &input);
++QImage preview(const QImage &input, int maximumEdge = 1600);
++}
+--- a/src/plasmacamera.cpp
++++ b/src/plasmacamera.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-FileCopyrightText: 2025 Devin Lin <devin@kde.org>
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <map>
+ #include <unistd.h>
+ #include <sys/mman.h>
+@@ -53,7 +54,11 @@
+     });
+ 
+     // resend frames that we received from the camera worker
+-    connect(m_cameraWorker, &Worker::viewFinderFrame, this, &PlasmaCamera::viewFinderFrame);
++    connect(m_cameraWorker, &Worker::viewFinderFrame, this, [this](const QImage &frame) {
++        Q_EMIT viewFinderFrame(frame);
++        m_cameraWorker->releasePreview();
++    });
++    connect(m_cameraWorker, &Worker::previewRate, this, &PlasmaCamera::setFps);
+     connect(m_cameraWorker, &Worker::stillCaptureFrames, this, &PlasmaCamera::stillCaptureFrames);
+     connect(m_cameraWorker, &Worker::stillCaptureFrames, this, [this]() {
+         // Finished taking image
+@@ -212,19 +217,104 @@
+     return m_settings.getExposureValue();
+ }
+ 
++bool PlasmaCamera::isoAvailable() const
++{
++    return m_settings.canSetGain();
++}
++
++bool PlasmaCamera::isoManual() const
++{
++    return m_settings.isSetGain();
++}
++
++int PlasmaCamera::isoMin() const
++{
++    return qRound(m_settings.minGain() * 100.0f);
++}
++
++int PlasmaCamera::isoMax() const
++{
++    return qRound(m_settings.maxGain() * 100.0f);
++}
++
++bool PlasmaCamera::exposureTimeAvailable() const
++{
++    return m_settings.canSetExposureTime();
++}
++
++bool PlasmaCamera::exposureTimeManual() const
++{
++    return m_settings.isSetExposureTime();
++}
++
++int PlasmaCamera::exposureTimeMin() const
++{
++    return m_settings.minExposureTime();
++}
++
++int PlasmaCamera::exposureTimeMax() const
++{
++    return m_settings.maxExposureTime();
++}
++
++bool PlasmaCamera::focusAvailable() const
++{
++    return m_settings.canSetFocusMode();
++}
++
++bool PlasmaCamera::focusPositionAvailable() const
++{
++    return m_settings.canSetFocusPosition();
++}
++
++bool PlasmaCamera::focusPointAvailable() const
++{
++    return m_settings.canSetFocusPoint();
++}
++
++int PlasmaCamera::focusMode() const
++{
++    return m_settings.getFocusMode();
++}
++
++int PlasmaCamera::focusPosition() const
++{
++    return m_settings.getFocusPosition();
++}
++
++int PlasmaCamera::focusPositionMin() const
++{
++    return m_settings.getFocusPositionMin();
++}
++
++int PlasmaCamera::focusPositionMax() const
++{
++    return m_settings.getFocusPositionMax();
++}
++
++bool PlasmaCamera::contrastAvailable() const
++{
++    return m_settings.canSetContrast();
++}
++
++float PlasmaCamera::contrast() const
++{
++    return m_settings.getContrast();
++}
++
++bool PlasmaCamera::saturationAvailable() const
++{
++    return m_settings.canSetSaturation();
++}
++
++float PlasmaCamera::saturation() const
++{
++    return m_settings.getSaturation();
++}
++
+ int PlasmaCamera::wbTemp() const
+ {
+     return m_settings.getWbTemp();
+-}
+-
+-int PlasmaCamera::contrast() const
+-{
+-    return m_settings.getContrast();
+-}
+-
+-int PlasmaCamera::saturation() const
+-{
+-    return m_settings.getSaturation();
+ }
+ 
+ Settings PlasmaCamera::settings() const
+@@ -327,6 +417,15 @@
+     }
+ }
+ 
++void PlasmaCamera::setDigitalZoom(qreal zoom)
++{
++    zoom = std::clamp(zoom, qreal(1.0), qreal(4.0));
++    if (qFuzzyCompare(m_digitalZoom, zoom))
++        return;
++    m_digitalZoom = zoom;
++    Q_EMIT digitalZoomChanged();
++}
++
+ void PlasmaCamera::setAfWindow(const QSize &afWindow)
+ {
+     if (m_settings.canSetAeEnable() && m_settings.trySetAfWindow(afWindow)) {
+@@ -337,6 +436,33 @@
+ void PlasmaCamera::resetAfWindow()
+ {
+     m_settings.unSetAfWindow();
++    Q_EMIT settingsChanged(m_settings);
++}
++
++void PlasmaCamera::setFocusMode(int mode)
++{
++    if (m_settings.trySetFocusMode(mode))
++        Q_EMIT settingsChanged(m_settings);
++}
++
++void PlasmaCamera::setFocusPosition(int position)
++{
++    if (m_settings.trySetFocusPosition(position))
++        Q_EMIT settingsChanged(m_settings);
++}
++
++void PlasmaCamera::triggerAutofocus()
++{
++    m_settings.triggerAutofocus();
++    Q_EMIT settingsChanged(m_settings);
++}
++
++void PlasmaCamera::focusAt(int x, int y)
++{
++    if (!m_settings.trySetFocusPoint(x, y))
++        return;
++    m_settings.trySetFocusMode(libcamera::controls::AfModeAuto);
++    m_settings.triggerAutofocus();
+     Q_EMIT settingsChanged(m_settings);
+ }
+ 
+@@ -393,7 +519,36 @@
+     Q_EMIT settingsChanged(m_settings);
+ }
+ 
+-void PlasmaCamera::setContrast(const int contrast)
++void PlasmaCamera::setWhiteBalanceAuto(bool automatic)
++{
++    if (automatic) {
++        m_settings.unSetWb();
++        Q_EMIT settingsChanged(m_settings);
++    } else if (m_settings.setWbGains(m_settings.wbRed(), m_settings.wbBlue())) {
++        Q_EMIT settingsChanged(m_settings);
++    }
++}
++
++void PlasmaCamera::setWhiteBalanceRed(float gain)
++{
++    if (m_settings.setWbGains(gain, m_settings.wbBlue()))
++        Q_EMIT settingsChanged(m_settings);
++}
++
++void PlasmaCamera::setWhiteBalanceBlue(float gain)
++{
++    if (m_settings.setWbGains(m_settings.wbRed(), gain))
++        Q_EMIT settingsChanged(m_settings);
++}
++
++void PlasmaCamera::setFullResolutionPreview(bool enabled)
++{
++    QMetaObject::invokeMethod(m_cameraWorker, [worker = m_cameraWorker, enabled]() {
++        worker->setFullResolutionPreview(enabled);
++    }, Qt::QueuedConnection);
++}
++
++void PlasmaCamera::setContrast(const float contrast)
+ {
+     if (m_settings.canSetContrast() && m_settings.trySetContrast(contrast)) {
+         Q_EMIT settingsChanged(m_settings);
+@@ -406,7 +561,7 @@
+     Q_EMIT settingsChanged(m_settings);
+ }
+ 
+-void PlasmaCamera::setSaturation(const int saturation)
++void PlasmaCamera::setSaturation(const float saturation)
+ {
+     if (m_settings.canSetSaturation() && m_settings.trySetSaturation(saturation)) {
+         Q_EMIT settingsChanged(m_settings);
+@@ -628,6 +783,7 @@
+     // Find whether the camera output needs to be mirrored (ex. selife cam)
+     std::optional<int> location = m_camera->properties().get(libcamera::properties::Location);
+     m_mirrorOutput = location.value_or(libcamera::properties::CameraLocationExternal) == libcamera::properties::CameraLocationFront;
++    Q_EMIT cameraOutputTransformChanged();
+ 
+     return true;
+ }
+--- a/src/plasmacamera.h
++++ b/src/plasmacamera.h
+@@ -55,6 +55,36 @@
+     Q_PROPERTY(QString cameraDevice READ cameraDevice WRITE setCameraDevice NOTIFY cameraDeviceChanged)
+     Q_PROPERTY(QCameraFormat cameraFormat READ cameraFormat WRITE setCameraFormat NOTIFY cameraFormatChanged)
+ 
++    Q_PROPERTY(qreal digitalZoom READ digitalZoom WRITE setDigitalZoom NOTIFY digitalZoomChanged)
++    Q_PROPERTY(bool focusAvailable READ focusAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(bool focusPositionAvailable READ focusPositionAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(bool focusPointAvailable READ focusPointAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(int focusMode READ focusMode WRITE setFocusMode NOTIFY settingsChanged)
++    Q_PROPERTY(int focusPosition READ focusPosition WRITE setFocusPosition NOTIFY settingsChanged)
++    Q_PROPERTY(int focusPositionMin READ focusPositionMin NOTIFY settingsChanged)
++    Q_PROPERTY(int focusPositionMax READ focusPositionMax NOTIFY settingsChanged)
++    Q_PROPERTY(bool denoisePhotos READ denoisePhotos WRITE setDenoisePhotos NOTIFY denoisePhotosChanged)
++    Q_PROPERTY(bool whiteBalanceAvailable READ whiteBalanceAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(bool whiteBalanceAuto READ whiteBalanceAuto WRITE setWhiteBalanceAuto NOTIFY settingsChanged)
++    Q_PROPERTY(float whiteBalanceRed READ whiteBalanceRed WRITE setWhiteBalanceRed NOTIFY settingsChanged)
++    Q_PROPERTY(float whiteBalanceBlue READ whiteBalanceBlue WRITE setWhiteBalanceBlue NOTIFY settingsChanged)
++    Q_PROPERTY(bool contrastAvailable READ contrastAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(float contrast READ contrast WRITE setContrast NOTIFY settingsChanged)
++    Q_PROPERTY(bool saturationAvailable READ saturationAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(float saturation READ saturation WRITE setSaturation NOTIFY settingsChanged)
++    Q_PROPERTY(int softwareRotationDegrees READ softwareRotationDegrees NOTIFY cameraOutputTransformChanged)
++    Q_PROPERTY(bool mirrorOutput READ mirrorOutput NOTIFY cameraOutputTransformChanged)
++    Q_PROPERTY(bool isoAvailable READ isoAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(bool isoManual READ isoManual NOTIFY settingsChanged)
++    Q_PROPERTY(int iso READ iso WRITE setIso NOTIFY settingsChanged)
++    Q_PROPERTY(int isoMin READ isoMin NOTIFY settingsChanged)
++    Q_PROPERTY(int isoMax READ isoMax NOTIFY settingsChanged)
++    Q_PROPERTY(bool exposureTimeAvailable READ exposureTimeAvailable NOTIFY settingsChanged)
++    Q_PROPERTY(bool exposureTimeManual READ exposureTimeManual NOTIFY settingsChanged)
++    Q_PROPERTY(int exposureTime READ exposureTime WRITE setExposureTime NOTIFY settingsChanged)
++    Q_PROPERTY(int exposureTimeMin READ exposureTimeMin NOTIFY settingsChanged)
++    Q_PROPERTY(int exposureTimeMax READ exposureTimeMax NOTIFY settingsChanged)
++
+     // Focus
+     // Q_PROPERTY(QSize afWindow READ afWindow WRITE setAfWindow RESET resetAfWindow NOTIFY afWindowChanged)
+ 
+@@ -150,14 +180,42 @@
+     int exposureTime() const;
+     bool exposureValueAvailable() const;
+     float exposureValue() const;
++    bool isoAvailable() const;
++    bool isoManual() const;
++    int isoMin() const;
++    int isoMax() const;
++    bool exposureTimeAvailable() const;
++    bool exposureTimeManual() const;
++    int exposureTimeMin() const;
++    int exposureTimeMax() const;
++    qreal digitalZoom() const { return m_digitalZoom; }
++    bool focusAvailable() const;
++    bool focusPositionAvailable() const;
++    bool focusPointAvailable() const;
++    int focusMode() const;
++    int focusPosition() const;
++    int focusPositionMin() const;
++    int focusPositionMax() const;
++    bool denoisePhotos() const { return m_denoisePhotos; }
++    void setDenoisePhotos(bool enabled) { if (m_denoisePhotos != enabled) { m_denoisePhotos = enabled; Q_EMIT denoisePhotosChanged(); } }
++    Q_INVOKABLE void setFullResolutionPreview(bool enabled);
++    bool whiteBalanceAvailable() const { return m_settings.canSetWbGains(); }
++    bool whiteBalanceAuto() const { return m_settings.wbAutomatic(); }
++    float whiteBalanceRed() const { return m_settings.wbRed(); }
++    float whiteBalanceBlue() const { return m_settings.wbBlue(); }
++    void setWhiteBalanceAuto(bool automatic);
++    void setWhiteBalanceRed(float gain);
++    void setWhiteBalanceBlue(float gain);
++    bool contrastAvailable() const;
++    float contrast() const;
++    bool saturationAvailable() const;
++    float saturation() const;
+ 
+     // White balance
+     // int wbMode() const;
+     int wbTemp() const;
+ 
+     // Contrast and saturation
+-    int contrast() const;
+-    int saturation() const;
+ 
+     // Camera settings
+     Settings settings() const;
+@@ -166,14 +224,17 @@
+     bool mirrorOutput() const;
+ 
+ Q_SIGNALS:
++    void denoisePhotosChanged();
+     void errorChanged();
+     void errorOccurred(const QString &errorString);
+     void cameraDeviceListChanged();
+ 
+     void availableChanged(bool available);
+     void cameraDeviceChanged(const QString &cameraDevice);
++    void cameraOutputTransformChanged();
+     void cameraFormatChanged();
+     void busyChanged();
++    void digitalZoomChanged();
+ 
+     // Photos
+     /*
+@@ -194,6 +255,7 @@
+     // Camera state
+     void setCameraDevice(const QString &cameraDeviceId);
+     void setCameraFormat(const QCameraFormat &cameraFormat);
++    void setDigitalZoom(qreal zoom);
+ 
+     // Focus
+     void setAfWindow(const QSize &afWindow);
+@@ -201,11 +263,15 @@
+ 
+     // Brightness
+     void setIso(int iso);
++    Q_INVOKABLE void resetIso();
+     void setExposureTime(int exposureTime);
+     void setExposureValue(float exposureValue);
+-    void resetIso();
+-    void resetExposureTime();
++    Q_INVOKABLE void resetExposureTime();
+     void resetExposureValue();
++    void setFocusMode(int mode);
++    void setFocusPosition(int position);
++    Q_INVOKABLE void triggerAutofocus();
++    Q_INVOKABLE void focusAt(int x, int y);
+ 
+     // White balance
+     // void setWbMode(int wbMode);
+@@ -213,8 +279,8 @@
+     void resetAwb();
+ 
+     // Contrast and saturation
+-    void setContrast(int contrast);
+-    void setSaturation(int saturation);
++    void setContrast(float contrast);
++    void setSaturation(float saturation);
+     void resetContrast();
+     void resetSaturation();
+ 
+@@ -228,6 +294,7 @@
+     void handleCameraRemoved(std::shared_ptr<libcamera::Camera> camera);
+ 
+ private:
++    bool m_denoisePhotos = true;
+ 	enum class State
+ 	{
+         None, // Init
+@@ -274,6 +341,7 @@
+     QString m_errorString;
+ 
+     float m_fps = 30.0f;
++    qreal m_digitalZoom = 1.0;
+ 
+     // The amount of degrees to rotate captured input by.
+     int m_softwareRotationDegrees = 0.0f;
+--- a/src/plasmacamera/settings.cpp
++++ b/src/plasmacamera/settings.cpp
+@@ -4,6 +4,9 @@
+ 
+ #include "settings.h"
+ 
++#include <algorithm>
++#include <cmath>
++
+ Settings::Settings() {}
+ 
+ Settings::~Settings() {}
+@@ -11,6 +14,21 @@
+ void Settings::load(const libcamera::ControlInfoMap &infoMap)
+ {
+     reset();
++    m_aeEnableAvailable = false;
++    m_manualExposureValueAvailable = false;
++    m_afWindowAvailable = false;
++    m_afModeAvailable = false;
++    m_afTriggerAvailable = false;
++    m_focusPositionAvailable = false;
++    m_focusPointAvailable = false;
++    m_wbGainsAvailable = infoMap.count(&libcamera::controls::AwbEnable) && infoMap.count(&libcamera::controls::ColourGains);
++    m_wbRed = m_wbBlue = 1.0f;
++    m_wbModeAvailable = false;
++    m_wbTempAvailable = false;
++    m_manualExposureTimeAvailable = false;
++    m_manualAnalogueGainAvailable = false;
++    m_manualContrastAvailable = false;
++    m_manualSaturationAvailable = false;
+ 
+     qDebug() << "Loading settings:";
+     for (const auto &[controlId, controlInfo] : infoMap) {
+@@ -42,6 +60,28 @@
+             m_afWindowAvailable = true;
+             break;
+ 
++        case libcamera::controls::AF_MODE:
++            m_afModeAvailable = true;
++            m_afMode = controlInfo.def().get<int32_t>();
++            break;
++
++        case libcamera::controls::AF_TRIGGER:
++            m_afTriggerAvailable = true;
++            break;
++
++        case libcamera::controls::S10_FOCUS_POSITION:
++            m_focusPositionAvailable = true;
++            m_focusPosition = controlInfo.def().get<int32_t>();
++            m_focusPositionMin = controlInfo.min().get<int32_t>();
++            m_focusPositionMax = controlInfo.max().get<int32_t>();
++            break;
++
++        case libcamera::controls::S10_FOCUS_POINT:
++            m_focusPointAvailable = true;
++            m_focusPoint = QPoint(controlInfo.def().get<libcamera::Point>().x,
++                                  controlInfo.def().get<libcamera::Point>().y);
++            break;
++
+         case libcamera::controls::AWB_MODE:
+             // TODO: AwbModeEnum
+             m_wbModeAvailable = true;
+@@ -109,15 +149,45 @@
+         controlMap.set(libcamera::controls::AeEnable, m_aeEnable);
+     }
+ 
+-    if (m_manualExposureValueAvailable && m_manualExposureValue) {
+-        controlMap.set(libcamera::controls::ExposureValue, m_exposureValue);
+-    }
+-
+-    if (m_manualExposureTimeAvailable && m_manualExposureTime) {
+-        controlMap.set(libcamera::controls::ExposureTime, m_exposureTime);
+-    }
+-
+-    // TODO: implement the rest of the settings
++    if (m_manualExposureValueAvailable) {
++        controlMap.set(libcamera::controls::ExposureValue, getExposureValue());
++    }
++
++    if (m_manualExposureTimeAvailable) {
++        controlMap.set(libcamera::controls::ExposureTimeMode,
++                       m_manualExposureTime ? libcamera::controls::ExposureTimeModeManual :
++                                              libcamera::controls::ExposureTimeModeAuto);
++        if (m_manualExposureTime)
++            controlMap.set(libcamera::controls::ExposureTime, m_exposureTime);
++    }
++    if (m_manualAnalogueGainAvailable) {
++        controlMap.set(libcamera::controls::AnalogueGainMode,
++                       m_manualAnalogueGain ? libcamera::controls::AnalogueGainModeManual :
++                                              libcamera::controls::AnalogueGainModeAuto);
++        if (m_manualAnalogueGain)
++            controlMap.set(libcamera::controls::AnalogueGain, m_analogueGain);
++    }
++
++    if (m_wbGainsAvailable) {
++        controlMap.set(libcamera::controls::AwbEnable, m_wbAuto);
++        if (!m_wbAuto)
++            controlMap.set(libcamera::controls::ColourGains, {m_wbRed, m_wbBlue});
++    }
++    if (m_afModeAvailable)
++        controlMap.set(libcamera::controls::AfMode, m_afMode);
++    if (m_afTriggerPending && m_afTriggerAvailable) {
++        controlMap.set(libcamera::controls::AfTrigger, libcamera::controls::AfTriggerStart);
++        m_afTriggerPending = false;
++    }
++    if (m_focusPositionAvailable && m_afMode == libcamera::controls::AfModeManual)
++        controlMap.set(libcamera::controls::S10FocusPosition, m_focusPosition);
++    if (m_focusPointAvailable)
++        controlMap.set(libcamera::controls::S10FocusPoint,
++                       libcamera::Point(m_focusPoint.x(), m_focusPoint.y()));
++    if (m_manualContrast)
++        controlMap.set(libcamera::controls::Contrast, m_contrast);
++    if (m_manualSaturation)
++        controlMap.set(libcamera::controls::Saturation, m_saturation);
+ }
+ 
+ void Settings::reset()
+@@ -126,8 +196,39 @@
+     unSetExposureValue();
+     unSetAfWindow();
+     unSetWb();
++    unSetExposureTime();
++    unSetGain();
+     unSetContrast();
+     unSetSaturation();
++    m_afMode = libcamera::controls::AfModeContinuous;
++    m_afTriggerPending = false;
++}
++
++bool Settings::trySetFocusMode(int mode)
++{
++    if (!m_afModeAvailable || mode < libcamera::controls::AfModeManual ||
++        mode > libcamera::controls::AfModeContinuous)
++        return false;
++    m_afMode = mode;
++    return true;
++}
++
++bool Settings::trySetFocusPosition(int position)
++{
++    if (!m_focusPositionAvailable || position < m_focusPositionMin ||
++        position > m_focusPositionMax)
++        return false;
++    m_focusPosition = position;
++    m_afMode = libcamera::controls::AfModeManual;
++    return true;
++}
++
++bool Settings::trySetFocusPoint(int x, int y)
++{
++    if (!m_focusPointAvailable)
++        return false;
++    m_focusPoint = QPoint(std::clamp(x, 0, 1000), std::clamp(y, 0, 1000));
++    return true;
+ }
+ 
+ 
+@@ -174,7 +275,8 @@
+ 
+ bool Settings::canSetExposureValue() const
+ {
+-    return m_aeEnable && m_manualExposureValueAvailable;
++    return getAeEnable() && m_manualExposureValueAvailable &&
++           !(m_manualExposureTime && m_manualAnalogueGain);
+ }
+ 
+ bool Settings::trySetExposureValue(const float exposureValue)
+@@ -183,10 +285,8 @@
+         return false;
+     }
+ 
+-    if (m_exposureValue != exposureValue) {
+-        m_manualExposureValue = true;
+-        m_exposureValue = exposureValue;
+-    }
++    m_manualExposureValue = true;
++    m_exposureValue = exposureValue;
+ 
+     return true;
+ }
+@@ -265,6 +365,17 @@
+  * - when we set WB with trySetWbMode or trySetWBTemp we will automatically change wb_auto appropriately
+  * - unSetWb, unSetWbMode, unSetWbTemp all do the same thing -> set back to auto WB
+  */
++bool Settings::setWbGains(float red, float blue)
++{
++    if (!m_wbGainsAvailable || !std::isfinite(red) || !std::isfinite(blue))
++        return false;
++    m_wbRed = std::clamp(red, 0.25f, 4.0f);
++    m_wbBlue = std::clamp(blue, 0.25f, 4.0f);
++    m_wbAuto = false;
++    m_wbAutoUseDefault = false;
++    return true;
++}
++
+ void Settings::unSetWb()
+ {
+     m_wbAuto = true;
+@@ -366,10 +477,8 @@
+         return false;
+     }
+ 
+-    if (m_exposureTime != exposureTime) {
+-        m_manualExposureTime = true;
+-        m_exposureTime = exposureTime;
+-    }
++    m_manualExposureTime = true;
++    m_exposureTime = std::clamp(exposureTime, m_exposureTimeMin, m_exposureTimeMax);
+ 
+     return true;
+ }
+@@ -415,10 +524,8 @@
+         return false;
+     }
+ 
+-    if (m_analogueGain != iso) {
+-        m_manualAnalogueGain = true;
+-        m_analogueGain = iso;
+-    }
++    m_manualAnalogueGain = true;
++    m_analogueGain = std::clamp(iso, m_analogueGainMin, m_analogueGainMax);
+ 
+     return true;
+ }
+--- a/src/plasmacamera/settings.h
++++ b/src/plasmacamera/settings.h
+@@ -5,6 +5,7 @@
+ 
+ #include <QImage>
+ #include <QDebug>
++#include <QPoint>
+ 
+ #include <libcamera/libcamera.h>
+ 
+@@ -63,6 +64,24 @@
+     void unSetAfWindow();
+     QSize getAfWindow() const;
+ 
++    bool canSetFocusMode() const { return m_afModeAvailable; }
++    bool canSetFocusPosition() const { return m_focusPositionAvailable; }
++    bool canSetFocusPoint() const { return m_focusPointAvailable; }
++    int getFocusMode() const { return m_afMode; }
++    int getFocusPosition() const { return m_focusPosition; }
++    int getFocusPositionMin() const { return m_focusPositionMin; }
++    int getFocusPositionMax() const { return m_focusPositionMax; }
++    bool trySetFocusMode(int mode);
++    bool trySetFocusPosition(int position);
++    bool trySetFocusPoint(int x, int y);
++    void triggerAutofocus() { m_afTriggerPending = m_afTriggerAvailable; }
++
++
++    bool canSetWbGains() const { return m_wbGainsAvailable; }
++    bool wbAutomatic() const { return m_wbAuto; }
++    float wbRed() const { return m_wbRed; }
++    float wbBlue() const { return m_wbBlue; }
++    bool setWbGains(float red, float blue);
+ 
+     // White Balance (WB) Settings
+     /*
+@@ -180,6 +199,17 @@
+     bool m_afWindowUseDefault = true;
+     bool m_afWindowAvailable = false;
+ 
++    int m_afMode = libcamera::controls::AfModeContinuous;
++    bool m_afModeAvailable = false;
++    bool m_afTriggerAvailable = false;
++    bool m_afTriggerPending = false;
++    int m_focusPosition = 256;
++    int m_focusPositionMin = 0;
++    int m_focusPositionMax = 511;
++    bool m_focusPositionAvailable = false;
++    QPoint m_focusPoint = QPoint(500, 500);
++    bool m_focusPointAvailable = false;
++
+     // White Balance (WB) Settings
+     /*
+      * TODO:
+@@ -191,6 +221,9 @@
+      * - AwbMode <-
+      * - ColourTemperature <-
+      */
++    bool m_wbGainsAvailable = false;
++    float m_wbRed = 1.0f;
++    float m_wbBlue = 1.0f;
+     bool m_wbAuto = true;
+     bool m_wbAutoUseDefault = true;
+ 
+--- a/src/plasmacamera/worker.cpp
++++ b/src/plasmacamera/worker.cpp
+@@ -2,6 +2,11 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "worker.h"
++#include "../photoprocessing.h"
++
++#include <algorithm>
++#include <cstdint>
++#include <cstdlib>
+ 
+ static const QMap<libcamera::PixelFormat, QImage::Format> NATIVE_FORMATS{
+     {libcamera::formats::ABGR8888, QImage::Format_RGBX8888},
+@@ -19,6 +24,8 @@
+ 
+ void Worker::init()
+ {
++    // Stream switching remains experimental after a device kernel fault.
++    m_separateCapture = qEnvironmentVariable("S10_CAMERA_SEPARATE_CAPTURE") == QLatin1String("1");
+     // start init after we have moved to the other thread
+     m_framePollTimer = new QTimer(this);
+     m_framePollTimer->setInterval(1000 / 60); // manually set 60 fps
+@@ -86,13 +93,50 @@
+ 
+ void Worker::capture()
+ {
++    if (!m_camera || m_mode != CaptureMode::ViewFinder) {
++        return;
++    }
++
+     m_stillCaptureFrames.clear();
+     setMode(CaptureMode::StillImage);
++    m_captureFramesSeen = 0;
++
++    if (!m_separateCapture)
++        return;
++
++    // Run the sensor's still-capture mode only after the shutter is pressed.
++    // This keeps full-resolution software ISP work out of the live preview path.
++    stopStream(false);
++    if (!startStream(libcamera::StreamRole::StillCapture, false)) {
++        setMode(CaptureMode::ViewFinder);
++        startViewFinder();
++        Q_EMIT stillCaptureFrames(QQueue<QImage>{});
++    }
+ }
+ 
+ void Worker::setSettings(const Settings& settings)
+ {
+     m_settings = settings;
++}
++
++void Worker::applyRequestSettings(libcamera::ControlList &controls)
++{
++    m_settings.set(controls);
++    if (m_mode != CaptureMode::StillImage || !m_separateCapture)
++        return;
++
++    // A stream restart resets the software algorithms. Keep the exposure and
++    // lens position from the live preview instead of photographing a new scan.
++    if (m_previewExposureTime) {
++        controls.set(libcamera::controls::ExposureTimeMode, libcamera::controls::ExposureTimeModeManual);
++        controls.set(libcamera::controls::ExposureTime, *m_previewExposureTime);
++    }
++    if (m_previewAnalogueGain) {
++        controls.set(libcamera::controls::AnalogueGainMode, libcamera::controls::AnalogueGainModeManual);
++        controls.set(libcamera::controls::AnalogueGain, *m_previewAnalogueGain);
++    }
++    if (m_camera->controls().find(&libcamera::controls::AfPause) != m_camera->controls().end())
++        controls.set(libcamera::controls::AfPause, libcamera::controls::AfPauseImmediate);
+ }
+ 
+ void Worker::setError(const QString &errorString)
+@@ -166,7 +210,7 @@
+     request->reuse(libcamera::Request::ReuseBuffers);
+ 
+     // Load our settings onto the camera request's controls
+-    m_settings.set(request->controls());
++    applyRequestSettings(request->controls());
+ 
+     // Queue request in camera for frame
+     m_camera->queueRequest(request);
+@@ -193,44 +237,85 @@
+ void Worker::processRequestDataAndEmit()
+ {
+     // Populates m_image
+-    processRequestData();
+-
+-    // Implement photo capture
++    if (!processRequestData() || m_image.isNull()) {
++        return;
++    }
++
+     if (m_mode == CaptureMode::StillImage) {
+-        const QMutexLocker lock(&m_stillCaptureFramesMutex);
+-
+-        if (m_stillCaptureFrames.length() >= 5) {
++        QQueue<QImage> capturedFrames;
++        bool captureComplete = false;
++        {
++            const QMutexLocker lock(&m_stillCaptureFramesMutex);
++            ++m_captureFramesSeen;
++
++            // Let automatic exposure and focus settle, but retain only the
++            // final full-resolution image to avoid holding several 48 MB frames.
++            if (m_captureFramesSeen >= 5) {
++                m_stillCaptureFrames.enqueue(m_image.copy());
++                capturedFrames = m_stillCaptureFrames;
++                m_stillCaptureFrames.clear();
++                captureComplete = true;
++            }
++        }
++
++        // Do not send the still stream through the live viewfinder path.
++        if (captureComplete) {
++            if (m_separateCapture)
++                stopStream(false);
++            setMode(CaptureMode::ViewFinder);
++            Q_EMIT stillCaptureFrames(capturedFrames);
++            if (m_separateCapture) {
++                startViewFinder();
++                return;
++            }
++        }
++
++        if (m_separateCapture)
+             return;
+-        }
+-
+-        // Add image to frames used for shot
+-        m_stillCaptureFrames.enqueue(m_image.copy());
+-
+-        // Once we reach 5 frames, emit the photo
+-        if (m_stillCaptureFrames.length() == 5) {
+-            setMode(CaptureMode::ViewFinder);
+-            Q_EMIT stillCaptureFrames(m_stillCaptureFrames);
+-        }
+-    }
+-
+-    // Emit view finder frame, m_image is moved for performance
+-    Q_EMIT viewFinderFrame(std::move(m_image));
+-}
+-
+-void Worker::processRequestData()
++    }
++
++    // The GUI may retain the frame after this request is reused or the stream
++    // is reconfigured. Give it owned storage instead of a view into DMA memory.
++    // Keep at most one owned frame queued to the GUI; drop stale previews.
++    if (!m_previewPending.exchange(true)) {
++        QImage preview = m_fullResolutionPreview ? m_image.copy() : S10Photo::preview(m_image);
++        if (!m_previewRateTimer.isValid())
++            m_previewRateTimer.start();
++        ++m_previewFrames;
++        if (m_previewRateTimer.elapsed() >= 3000) {
++            const float fps = 1000.0f * m_previewFrames / m_previewRateTimer.elapsed();
++            qInfo() << "S10 preview" << preview.size() << fps << "fps";
++            Q_EMIT previewRate(fps);
++            m_previewRateTimer.restart();
++            m_previewFrames = 0;
++        }
++        Q_EMIT viewFinderFrame(preview);
++    }
++    if (getNativeFormats().contains(m_format))
++        m_image = QImage();
++}
++
++bool Worker::processRequestData()
+ {
+     libcamera::Request *request;
+     {
+         // Obtain a finished request from the queue
+         const QMutexLocker lock(&m_doneMutex);
+         if (m_doneQueue.isEmpty()) {
+-            return;
++            return false;
+         }
+         request = m_doneQueue.dequeue();
+     }
+ 
+     if (!request->buffers().count(m_stream)) {
+-        return;
++        return false;
++    }
++
++    if (m_mode == CaptureMode::ViewFinder) {
++        if (auto value = request->metadata().get(libcamera::controls::ExposureTime))
++            m_previewExposureTime = *value;
++        if (auto value = request->metadata().get(libcamera::controls::AnalogueGain))
++            m_previewAnalogueGain = *value;
+     }
+ 
+     libcamera::FrameBuffer *buffer = request->buffers().at(m_stream);
+@@ -249,63 +334,92 @@
+         const QMutexLocker lock(&m_freeMutex);
+         m_freeQueue.enqueue(request);
+     }
+-}
+-
+-void Worker::startViewFinder()
++    return true;
++}
++
++bool Worker::startStream(const libcamera::StreamRole role, const bool reduceResolution)
+ {
+     if (!m_camera) {
+-        return;
+-    }
+-
+-    qDebug() << "Starting view finder in worker";
+-
+-    /*
+-     * https://libcamera.org/api-html/namespacelibcamera.html#a295d1f5e7828d95c0b0aabc0a8baac03
+-     * The StillCapture and Viewfinder roles both generate a config that uses the same resolution
+-     * while the documentation states that the image will be captured in higher quality I prefer
+-     * the Viewfinder config because it appears that the higher resource usage of StillCapture
+-     * makes app more unstable (it could also be related to the demands of restarting the camera)
+-     */
+-    m_config = m_camera->generateConfiguration({libcamera::StreamRole::Viewfinder});
+-
+-    configure();
+-
+-    // Connect signal for when a frame request is complete
+-    m_camera->requestCompleted.connect(this, &Worker::requestComplete);
++        return false;
++    }
++    if (m_streamActive) {
++        setError(QStringLiteral("Cannot reconfigure a camera whose stream did not stop"));
++        return false;
++    }
++
++    qDebug() << "Starting camera stream in worker, role:" << static_cast<int>(role);
++    m_config = m_camera->generateConfiguration({role});
++    if (!m_config || m_config->empty()) {
++        setError(QStringLiteral("The camera provided no stream configuration"));
++        stopStream(false);
++        return false;
++    }
++    if (!configure(reduceResolution)) {
++        stopStream(false);
++        return false;
++    }
++
++    if (!m_requestSignalConnected) {
++        m_camera->requestCompleted.connect(this, &Worker::requestComplete);
++        m_requestSignalConnected = true;
++    }
+ 
+     // Start camera
+-    if (int ret = m_camera->start(); ret < 0) {
++    libcamera::ControlList initialControls(m_camera->controls());
++    applyRequestSettings(initialControls);
++    if (int ret = m_camera->start(&initialControls); ret < 0) {
+         setError(ret);
+-        return;
+-    }
++        stopStream(false);
++        return false;
++    }
++    m_streamActive = true;
+ 
+     // Add all requests
+     for (std::unique_ptr<libcamera::Request> &request : m_requests) {
++        applyRequestSettings(request->controls());
+         if (int ret = m_camera->queueRequest(request.get()); ret < 0) {
+             setError(ret);
+-            return;
++            stopStream(false);
++            return false;
+         }
+     }
+ 
+     // Start polling for frames
+     m_framePollTimer->start();
++    return true;
++}
++
++void Worker::startViewFinder()
++{
++    startStream(libcamera::StreamRole::Viewfinder, m_separateCapture);
+ }
+ 
+ void Worker::stopViewFinder()
+ {
+-    qDebug() << "stop view finder";
++    stopStream(true);
++}
++
++void Worker::stopStream(const bool releaseCamera)
++{
++    qDebug() << "Stopping camera stream";
+     m_framePollTimer->stop();
+ 
+-    if (m_camera) {
++    if (m_camera && m_streamActive) {
+         // All pending requests are cancelled
+         int ret = m_camera->stop();
+         if (ret < 0) {
+             setError(ret);
++            // The camera may still own DMA buffers; never release them after
++            // a failed stop or attempt to configure a second stream over it.
+             return;
+         }
+-
++        m_streamActive = false;
++    }
++
++    if (m_camera && m_requestSignalConnected) {
+         // Cleanup signals
+         m_camera->requestCompleted.disconnect(this);
++        m_requestSignalConnected = false;
+     }
+ 
+     // Must be cleared before following variables are cleared
+@@ -316,9 +430,15 @@
+     if (m_allocator) {
+         m_allocator->free(m_stream);
+         delete m_allocator;
+-    }
+-
++        m_allocator = nullptr;
++    }
++
++    m_image = QImage();
++    m_previewPending.store(false);
++    m_previewRateTimer.invalidate();
++    m_previewFrames = 0;
+     m_mappedBuffers.clear();
++    m_stream = nullptr;
+ 
+     {
+         const QMutexLocker lock(&m_freeMutex);
+@@ -335,7 +455,7 @@
+         m_doneQueue.clear();
+     }
+ 
+-    if (m_camera) {
++    if (m_camera && releaseCamera) {
+         int ret = m_camera->release();
+         if (ret < 0) {
+             setError(ret);
+@@ -343,7 +463,11 @@
+         }
+     }
+ 
+-    m_camera.reset();
++    if (releaseCamera) {
++        m_camera.reset();
++        m_previewExposureTime.reset();
++        m_previewAnalogueGain.reset();
++    }
+ }
+ 
+ void Worker::setState(const State state)
+@@ -435,10 +559,10 @@
+     }
+ }
+ 
+-void Worker::configure()
++bool Worker::configure(const bool reduceResolution)
+ {
+     if (!m_config || !m_camera) {
+-        return;
++        return false;
+     }
+ 
+     // Add stream configuration
+@@ -462,10 +586,52 @@
+         }
+     }
+ 
++    // sizes() expands continuous ranges into common resolutions and may omit
++    // the sensor's exact maximum (for example 4028x3024). Use the range endpoint
++    // for stills so the advertised sensor resolution is actually retained.
++    const libcamera::Size defaultSize = streamConfig.formats().range(streamConfig.pixelFormat).max;
++    const std::vector<libcamera::Size> supportedSizes = streamConfig.formats().sizes(streamConfig.pixelFormat);
++    if (!supportedSizes.empty()) {
++        if (reduceResolution) {
++            const unsigned int targetWidth = std::max(1u, defaultSize.width / 2);
++            const unsigned int targetHeight = std::max(1u, defaultSize.height / 2);
++            const std::uint64_t referenceArea = static_cast<std::uint64_t>(defaultSize.width) * defaultSize.height;
++            const libcamera::Size *best = nullptr;
++            std::uint64_t bestArea = 0;
++
++            for (const libcamera::Size &size : supportedSizes) {
++                if (!size.width || !size.height || size.width > targetWidth || size.height > targetHeight)
++                    continue;
++
++                const std::uint64_t area = static_cast<std::uint64_t>(size.width) * size.height;
++                const std::uint64_t aspectDelta = static_cast<std::uint64_t>(std::llabs(
++                    static_cast<std::int64_t>(size.width) * defaultSize.height -
++                    static_cast<std::int64_t>(size.height) * defaultSize.width));
++                if (aspectDelta * 100 > referenceArea * 3)
++                    continue;
++
++                if (area > bestArea) {
++                    best = &size;
++                    bestArea = area;
++                }
++            }
++
++            if (best) {
++                streamConfig.size = *best;
++            } else {
++                // Some sensors expose only a full-size mode. Ask the pipeline
++                // for a half-size stream; validate() will select a supported mode.
++                streamConfig.size = libcamera::Size(targetWidth, targetHeight);
++            }
++        } else {
++            streamConfig.size = defaultSize;
++        }
++    }
++
+     // TODO: allow user to override config
+     //  - https://git.libcamera.org/libcamera/libcamera.git/tree/src/apps/qcam/main_window.cpp#n399
+ 
+-    qDebug() << "Viewfinder configuration is: " << streamConfig.toString();
++    qDebug() << "Requested stream configuration is: " << streamConfig.toString();
+ 
+     // Validate config
+     const libcamera::CameraConfiguration::Status validation = m_config->validate();
+@@ -474,7 +640,8 @@
+     }
+     if (validation == libcamera::CameraConfiguration::Invalid) {
+         qWarning() << QString::fromStdString("Failed to validate camera configuration");
+-        return;
++        setError(QStringLiteral("Failed to validate camera configuration"));
++        return false;
+     }
+ 
+     // TODO: it might actually be possible to quick switch the config of the camera
+@@ -483,7 +650,7 @@
+     int ret = m_camera->configure(m_config.get());
+     if (ret < 0) {
+         setError(ret);
+-        return;
++        return false;
+     }
+ 
+     m_stream = m_config->at(0).stream();
+@@ -494,14 +661,16 @@
+                     streamConfig.stride);
+     if (ret < 0) {
+         setError(ret);
+-        return;
++        return false;
+     }
+ 
+     ret = createRequests();
+     if (ret < 0) {
+         setError(ret);
+-        return;
+-    }
++        return false;
++    }
++
++    return true;
+ }
+ 
+ const QList<libcamera::PixelFormat>& Worker::getNativeFormats()
+--- a/src/plasmacamera/worker.h
++++ b/src/plasmacamera/worker.h
+@@ -4,6 +4,8 @@
+ #pragma once
+ 
+ #include <QTimer>
++#include <QElapsedTimer>
++#include <atomic>
+ #include <QDebug>
+ #include <QImage>
+ #include <QQueue>
+@@ -13,6 +15,7 @@
+ #include <QCameraFormat>
+ 
+ #include <memory>
++#include <optional>
+ #include <libcamera/libcamera.h>
+ #include <libcamera/framebuffer.h>
+ 
+@@ -49,6 +52,7 @@
+     // TODO: https://stackoverflow.com/questions/8455887/stack-object-qt-signal-and-parameter-as-reference
+     //		- might not work properly for QQueue unless copy constructor is done recursively
+     //		- it looks like slots with queued connection might work really nicely?
++    void previewRate(float fps);
+     void viewFinderFrame(const QImage &frame); // connect to this to get new frames
+     void stillCaptureFrames(const QQueue<QImage> &frames); // connect to this to get captures
+ 
+@@ -70,6 +74,8 @@
+     void capture();
+ 
+     void setSettings(const Settings &settings);
++    void releasePreview() { m_previewPending.store(false); }
++    void setFullResolutionPreview(bool enabled) { m_fullResolutionPreview = enabled; }
+ 
+ private Q_SLOTS:
+     void setError(int libcameraError);
+@@ -98,13 +104,16 @@
+         Video,
+     };
+ 
++    bool startStream(libcamera::StreamRole role, bool reduceResolution);
++    void stopStream(bool releaseCamera);
+     void startViewFinder();
+     void stopViewFinder();
+ 
+     void setState(State state);
+     void setMode(CaptureMode mode);
+ 
+-    void configure();
++    bool configure(bool reduceResolution);
++    void applyRequestSettings(libcamera::ControlList &controls);
+ 
+     static const QList<libcamera::PixelFormat> &getNativeFormats();
+     int setFormat(const QSize &size, const libcamera::PixelFormat &format, const libcamera::ColorSpace &colorSpace, unsigned int stride);
+@@ -120,7 +129,7 @@
+     int createRequests();
+ 
+     void requestComplete(libcamera::Request *request);
+-    void processRequestData(); // convert buffers to QImage stored at m_image
++    bool processRequestData(); // convert a completed buffer to m_image
+ 
+     bool m_error = false;
+     QString m_errorString;
+@@ -148,6 +157,16 @@
+     libcamera::FrameBufferAllocator *m_allocator{};
+     std::map<libcamera::FrameBuffer *, std::unique_ptr<Image>> m_mappedBuffers;
+     std::vector<std::unique_ptr<libcamera::Request>> m_requests;
++    bool m_streamActive = false;
++    bool m_requestSignalConnected = false;
++    unsigned int m_captureFramesSeen = 0;
++    bool m_separateCapture = false;
++    std::atomic<bool> m_previewPending{false};
++    bool m_fullResolutionPreview = false;
++    QElapsedTimer m_previewRateTimer;
++    unsigned int m_previewFrames = 0;
++    std::optional<int32_t> m_previewExposureTime;
++    std::optional<float> m_previewAnalogueGain;
+ 
+     // Queue of finished requests with data, waiting for processing
+     QQueue<libcamera::Request *> m_doneQueue;
+--- a/src/plasmacameramanager.cpp
++++ b/src/plasmacameramanager.cpp
+@@ -2,7 +2,13 @@
+ // SPDX-FileCopyrightText: 2025 Devin Lin <devin@kde.org>
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++#include <algorithm>
+ #include <QSize>
++#include <QSaveFile>
++#include <QFutureWatcher>
++#include <QElapsedTimer>
++#include <QtConcurrent>
++#include "photoprocessing.h"
+ 
+ #include "camerasettings.h"
+ #include "plasmacamera/path.h"
+@@ -58,7 +64,7 @@
+ 
+ bool PlasmaCameraManager::isReadyForCapture() const
+ {
+-    return m_readyForCapture;
++    return m_readyForCapture && !m_photoCapturePending;
+ }
+ 
+ PlasmaCameraManager::FileFormat PlasmaCameraManager::fileFormat() const
+@@ -208,7 +214,7 @@
+ 
+     if (m_readyForCapture != ready) {
+         m_readyForCapture = ready;
+-        Q_EMIT readyForCaptureChanged(ready);
++        Q_EMIT readyForCaptureChanged(isReadyForCapture());
+     }
+ }
+ 
+@@ -255,10 +261,11 @@
+ {
+     if (plasmaCamera != m_plasmaCamera) {
+         if (m_plasmaCamera) {
+-            disconnect(plasmaCamera, &PlasmaCamera::availableChanged, this, &PlasmaCameraManager::setReadyForCapture);
+-            disconnect(plasmaCamera, &PlasmaCamera::settingsChanged, this, &PlasmaCameraManager::setSettings);
+-            disconnect(plasmaCamera, &PlasmaCamera::viewFinderFrame, this, &PlasmaCameraManager::processViewfinderFrame);
+-            disconnect(plasmaCamera, &PlasmaCamera::stillCaptureFrames, this, &PlasmaCameraManager::processCaptureImage);
++            disconnect(m_plasmaCamera, &PlasmaCamera::availableChanged, this, &PlasmaCameraManager::setReadyForCapture);
++            disconnect(m_plasmaCamera, &PlasmaCamera::settingsChanged, this, &PlasmaCameraManager::setSettings);
++            disconnect(m_plasmaCamera, &PlasmaCamera::viewFinderFrame, this, &PlasmaCameraManager::processViewfinderFrame);
++            disconnect(m_plasmaCamera, &PlasmaCamera::stillCaptureFrames, this, &PlasmaCameraManager::processCaptureImage);
++            disconnect(m_plasmaCamera, &PlasmaCamera::errorOccurred, this, &PlasmaCameraManager::handleCameraError);
+         }
+ 
+         m_plasmaCamera = plasmaCamera;
+@@ -268,6 +275,7 @@
+             connect(plasmaCamera, &PlasmaCamera::settingsChanged, this, &PlasmaCameraManager::setSettings);
+             connect(plasmaCamera, &PlasmaCamera::viewFinderFrame, this, &PlasmaCameraManager::processViewfinderFrame);
+             connect(plasmaCamera, &PlasmaCamera::stillCaptureFrames, this, &PlasmaCameraManager::processCaptureImage);
++            connect(plasmaCamera, &PlasmaCamera::errorOccurred, this, &PlasmaCameraManager::handleCameraError);
+         }
+ 
+         Q_EMIT plasmaCameraChanged();
+@@ -468,6 +476,9 @@
+ 
+ void PlasmaCameraManager::setError(const int id, const Error error, const QString& errorString)
+ {
++    if (!m_photoProcessing)
++        m_photoCapturePending = false;
++    Q_EMIT readyForCaptureChanged(isReadyForCapture());
+     m_error = error;
+     m_errorString = errorString;
+ 
+@@ -475,6 +486,12 @@
+ 
+     Q_EMIT errorChanged();
+     Q_EMIT errorOccurred(id, m_error, m_errorString);
++}
++
++void PlasmaCameraManager::handleCameraError(const QString &error)
++{
++    if (m_photoCapturePending && !m_photoProcessing)
++        setError(m_imageCaptureNum, ResourceError, error);
+ }
+ 
+ void PlasmaCameraManager::unsetError()
+@@ -545,36 +562,58 @@
+     }
+     const QString fileName = PlasmaLibcameraUtils::generateFileName(
+         m_imageCaptureFileName, QLatin1String("jpg"), m_filenamePattern, m_outputPath);
+-    QFile file(fileName);
+-
+-    QImage image = frames.head();
+-
+-    // Flip image if requested
+-    if (m_plasmaCamera->mirrorOutput()) {
+-        image = image.mirrored(); // Deprecated, replace with image.flipped() once we are on Qt 6.9
+-    }
+-
+-    // Do software rotation
+-    // From testing, most drivers don't seem to implement hardware orientation correctly (CameraConfiguration::orientation),
+-    // it either isn't supported or just crashes. So we will just use software rotation for best hardware compatibility.
+-    QTransform transform;
+-    transform.rotate(outputOrientationDegrees());
+-    image = image.transformed(transform);
+-
+-    // TODO: set format and quality
+-    qDebug() << "saving image to " << fileName;
+-    const bool res = image.save(&file, "JPEG", 50);
+-    if (!res) {
+-        setError(
+-            0,
+-            ResourceError,
+-            QString::fromStdString("Could not save to file: %1").arg(fileName));
+-    }
+-
+-    // Write EXIF data
+-    writeExifData(fileName);
+-
+-    Q_EMIT imageSaved(m_imageCaptureNum, fileName);
++
++    if (frames.isEmpty()) {
++        setError(0, ResourceError, QStringLiteral("No camera frame was captured"));
++        return;
++    }
++    // Snapshot every mutable setting on the GUI thread. The job owns its pixels
++    // and never touches the camera, manager or mapped capture buffers.
++    const QImage captured = frames.last();
++    const qreal zoom = m_plasmaCamera->digitalZoom();
++    const bool mirror = m_plasmaCamera->mirrorOutput();
++    const bool denoise = m_plasmaCamera->denoisePhotos();
++    const int rotation = qRound(outputOrientationDegrees());
++    const int captureId = m_imageCaptureNum;
++    m_photoProcessing = true;
++    auto *watcher = new QFutureWatcher<QString>(this);
++    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, fileName, captureId]() {
++        const QString error = watcher->result();
++        watcher->deleteLater();
++        m_photoProcessing = false;
++        m_photoCapturePending = false;
++        Q_EMIT readyForCaptureChanged(isReadyForCapture());
++        if (!error.isEmpty()) {
++            setError(captureId, ResourceError, error);
++            return;
++        }
++        Q_EMIT imageSaved(captureId, fileName);
++    });
++    watcher->setFuture(QtConcurrent::run([captured, zoom, mirror, denoise, rotation, fileName, now]() -> QString {
++        QElapsedTimer timer;
++        timer.start();
++        QImage image = captured;
++        if (zoom > 1.001) {
++            const int w = std::max(1, qRound(image.width() / zoom));
++            const int h = std::max(1, qRound(image.height() / zoom));
++            image = image.copy((image.width() - w) / 2, (image.height() - h) / 2, w, h);
++        }
++        if (denoise)
++            image = S10Photo::denoise(image);
++        const auto filterMs = timer.elapsed();
++        if (mirror)
++            image = image.mirrored();
++        QTransform transform;
++        transform.rotate(rotation);
++        image = image.transformed(transform);
++        QSaveFile file(fileName);
++        if (!file.open(QIODevice::WriteOnly) || !image.save(&file, "JPEG", 95) || !file.commit())
++            return QStringLiteral("Could not save photo: %1").arg(fileName);
++        writeExifData(fileName, now);
++        qInfo() << "S10 photo" << image.size() << "filter-ms" << filterMs
++                << "total-ms" << timer.elapsed();
++        return {};
++    }));
+ }
+ 
+ QString getExifOffsetFormat(int offsetSeconds)
+@@ -587,7 +626,7 @@
+     return QStringLiteral("%1%2:%3").arg(sign).arg(hours, 2, 10, QLatin1Char('0')).arg(minutes, 2, 10, QLatin1Char('0'));
+ }
+ 
+-void PlasmaCameraManager::writeExifData(const QString &fileName)
++void PlasmaCameraManager::writeExifData(const QString &fileName, const QDateTime &captureTime)
+ {
+     try {
+         Exiv2::Image::UniquePtr image = Exiv2::ImageFactory::open(fileName.toStdString());
+@@ -600,7 +639,7 @@
+         Exiv2::ExifData &exifData = image->exifData();
+ 
+         // Write time and date related information
+-        QDateTime now = QDateTime::currentDateTime();
++        const QDateTime &now = captureTime;
+ 
+         std::string exifDateTime = now.toString(QStringLiteral("yyyy:MM:dd HH:mm:ss")).toStdString();
+         exifData["Exif.Image.DateTime"] = exifDateTime;
+@@ -688,6 +727,8 @@
+         return newImageCaptureId;
+     }
+ 
++    m_photoCapturePending = true;
++    Q_EMIT readyForCaptureChanged(false);
+     m_imageCaptureNum = newImageCaptureId;
+     m_plasmaCamera->captureImage();
+ 
+--- a/src/plasmacameramanager.h
++++ b/src/plasmacameramanager.h
+@@ -230,7 +230,7 @@
+     /*!
+      * Writes EXIF data based on the current camera state to the given fileName.
+      */
+-    void writeExifData(const QString &fileName);
++    static void writeExifData(const QString &fileName, const QDateTime &captureTime);
+ 
+     void setAudioRecordingEnabledInternal(bool enabled);
+ 
+@@ -248,12 +248,15 @@
+ 
+     // preforming an image capture
+     bool m_readyForCapture = false;
++    bool m_photoCapturePending = false;
++    bool m_photoProcessing = false;
++    void handleCameraError(const QString &error);
+ 
+     // saving to file
+     FileFormat m_fileFormat;
+     FilenamePattern m_filenamePattern;
+     OutputPath m_outputPath;
+-    Quality m_quality = Quality::NormalQuality;
++    Quality m_quality = Quality::VeryHighQuality;
+     QList<FileFormat> m_supportedFileFormats;
+ 
+     // preview and video recording

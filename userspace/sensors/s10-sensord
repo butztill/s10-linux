@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""s10-sensord: net.hadess.SensorProxy replacement for the Galaxy S10 sensor hub.
+
+Boots the BCM4773 hub, enables sensors on demand (Claim*/Release*) and publishes
+orientation / ambient light / proximity / compass on the system bus so GNOME Shell
+(auto-rotate, adaptive brightness) works exactly like with iio-sensor-proxy.
+"""
+import os, sys, time, math, struct, json, signal, traceback
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dbus, dbus.service, dbus.mainloop.glib
+from gi.repository import GLib
+import s10shub as S
+
+CONF = {'accel_axes': [1, 1, 1], 'accel_swap_xy': False, 'accel_interval': 200,
+        'light_interval': 500, 'prox_interval': 200, 'mag_interval': 200,
+        'light_scale': 1.0, 'prox_near_adc': None, 'debug': False}
+try: CONF.update(json.load(open('/etc/s10-sensors.json')))
+except Exception: pass
+
+def log(*a):
+    print(*a, file=sys.stderr); sys.stderr.flush()
+
+BUS = 'net.hadess.SensorProxy'; PATH = '/net/hadess/SensorProxy'; IFACE = 'net.hadess.SensorProxy'
+CPATH = PATH + '/Compass'; CIFACE = IFACE + '.Compass'
+PROP = 'org.freedesktop.DBus.Properties'
+
+class Daemon:
+    def __init__(self):
+        self.hub = None
+        self.claims = {'accel': set(), 'light': set(), 'prox': set(), 'compass': set()}
+        self.state = dict(orientation='undefined', light=0.0, near=False, heading=0.0)
+        self.accel = (0, 0, 0); self.mag = (0, 0, 0)
+        self.prox_base = None
+        self.on = set()
+        self.booted = False
+        self.last_event = time.time()
+        self.resets = 0; self.last_reset = 0.0
+
+    # ---- hub management
+    def ensure_hub(self):
+        if self.booted: return True
+        try:
+            if self.hub is None: self.hub = S.Hub(log=log)
+            self.hub.boot(); self.booted = True; self.on = set()
+            GLib.io_add_watch(self.hub.host.fileno(), GLib.IO_PRI | GLib.IO_ERR, self.on_irq)
+            return True
+        except Exception:
+            log('hub boot failed:', traceback.format_exc()); self.booted = False
+            try: self.hub.power_off()
+            except Exception: pass
+            return False
+
+    def want(self):
+        w = {}
+        if self.claims['accel']: w[S.ACCEL] = CONF['accel_interval']
+        if self.claims['light']: w[S.LIGHT] = CONF['light_interval']
+        if self.claims['prox']: w[S.PROX] = CONF['prox_interval']
+        if self.claims['compass']: w[S.MAG] = CONF['mag_interval']; w[S.ACCEL] = CONF['accel_interval']
+        return w
+
+    def apply(self):
+        w = self.want()
+        if not w and not self.booted: return
+        if w and not self.ensure_hub(): return
+        try:
+            for sid in list(self.on):
+                if sid not in w: self.hub.sensor_off(sid); self.on.discard(sid)
+            for sid, ms in w.items():
+                if sid not in self.on:
+                    self.hub.sensor_on(sid, ms); self.on.add(sid)
+                    self.last_event = time.time()   # boot/enable may take >15 s; do not count it as silence
+            if not w:
+                self.hub.power_off(); self.booted = False; self.on = set()
+            self.process()
+        except Exception:
+            log('apply failed:', traceback.format_exc()); self.reset_hub()
+
+    def reset_hub(self):
+        self.booted = False; self.on = set()
+        try: self.hub.power_off()
+        except Exception: pass
+        # back off on repeated failures: every boot attempt polls SPI hot (~200 mA)
+        now = time.time()
+        self.resets = self.resets + 1 if now - self.last_reset < 120 else 1
+        self.last_reset = now
+        delay = min(2 * 2 ** (self.resets - 1), 120)
+        GLib.timeout_add_seconds(delay, lambda: (self.apply(), False)[1])
+
+    # ---- data
+    def on_irq(self, fd, cond):
+        try:
+            self.hub.host.get()
+            self.process()
+        except Exception:
+            log('irq failed:', traceback.format_exc()); self.reset_hub(); return False
+        return True
+
+    def tick(self):
+        if self.booted:
+            try:
+                self.process()
+                if self.on and time.time() - self.last_event > 15:
+                    log('no data for 15 s, resetting hub'); self.reset_hub()
+            except Exception:
+                log('tick failed:', traceback.format_exc()); self.reset_hub()
+        return True
+
+    def process(self):
+        self.hub.feed(0.0)
+        for e in self.hub.events():
+            if e[0] != 'sens': 
+                if CONF['debug'] and e[0] == 'log': log('MCU:', e[1][:200])
+                continue
+            self.last_event = time.time()
+            sid, d = e[1], e[2]
+            if sid == S.ACCEL: self.on_accel(struct.unpack('<hhh', d))
+            elif sid == S.LIGHT: self.on_light(d)
+            elif sid == S.PROX: self.on_prox(d)
+            elif sid == S.MAG: self.on_mag(struct.unpack_from('<hhh', d))
+
+    def on_accel(self, v):
+        x, y, z = v
+        sx, sy, sz = CONF['accel_axes']
+        x, y, z = x * sx, y * sy, z * sz
+        if CONF['accel_swap_xy']: x, y = y, x
+        self.accel = (x, y, z)
+        if CONF['debug']:
+            import time as _t
+            if _t.time() - getattr(self, '_dbg', 0) > 1: self._dbg = _t.time(); log('accel', x, y, z)
+        o = self.calc_orientation(self.state['orientation'], x, y, z)
+        if o != self.state['orientation']:
+            self.state['orientation'] = o; self.svc.changed({'AccelerometerOrientation': o})
+
+    @staticmethod
+    def calc_orientation(prev, x, y, z):
+        g = math.sqrt(x * x + y * y + z * z)
+        if g < 500: return prev
+        if abs(z) / g > 0.85:                 # lying flat: keep previous
+            return prev if prev != 'undefined' else 'normal'
+        ang = math.degrees(math.atan2(x, y))  # 0 = top up, +90 = right edge up
+        order = {'normal': 0, 'right-up': 90, 'bottom-up': 180, 'left-up': -90}
+        if prev in order:
+            d = (ang - order[prev] + 180) % 360 - 180
+            if abs(d) < 55: return prev
+        if abs(ang) <= 45: return 'normal'
+        if 45 < ang < 135: return 'right-up'
+        if -135 < ang < -45: return 'left-up'
+        return 'bottom-up'
+
+    def on_light(self, d):
+        lux = struct.unpack_from('<I', d, 0)[0] * CONF['light_scale']
+        if abs(lux - self.state['light']) >= max(1.0, 0.05 * self.state['light']):
+            self.state['light'] = float(lux); self.svc.changed({'LightLevel': float(lux)})
+
+    def on_prox(self, d):
+        det, adc = d[0], struct.unpack_from('<H', d, 1)[0]
+        thr = CONF['prox_near_adc']
+        near = (det == 1) if thr is None else adc >= thr
+        if near != self.state['near']:
+            self.state['near'] = near; self.svc.changed({'ProximityNear': near})
+
+    def on_mag(self, v):
+        self.mag = v
+        mx, my, mz = v; ax, ay, az = self.accel
+        n = math.sqrt(ax * ax + ay * ay + az * az) or 1.0
+        ax, ay, az = ax / n, ay / n, az / n
+        # tilt compensated heading
+        hx = my * az - mz * ay; hy = mz * ax - mx * az
+        hdg = (math.degrees(math.atan2(hx, hy)) + 360) % 360
+        if abs(((hdg - self.state['heading']) + 180) % 360 - 180) >= 2:
+            self.state['heading'] = hdg; self.svc.compass_changed({'CompassHeading': hdg})
+
+class Service(dbus.service.Object):
+    def __init__(self, bus, d):
+        self.d = d; d.svc = self
+        name = dbus.service.BusName(BUS, bus, do_not_queue=True)
+        super().__init__(name, PATH)
+        self.comp = Compass(bus, name, self)
+        self.bus = bus
+        bus.add_signal_receiver(self.owner_changed, 'NameOwnerChanged', 'org.freedesktop.DBus', 'org.freedesktop.DBus', '/org/freedesktop/DBus')
+
+    def owner_changed(self, name, old, new):
+        if new: return
+        ch = False
+        for k, s in self.d.claims.items():
+            if name in s: s.discard(name); ch = True
+        if ch: self.d.apply()
+
+    def props(self, iface=IFACE):
+        s = self.d.state
+        return {'HasAccelerometer': True, 'AccelerometerOrientation': s['orientation'], 'AccelerometerTilt': 'unknown',
+                'HasAmbientLight': True, 'LightLevelUnit': 'lux', 'LightLevel': s['light'],
+                'HasProximity': True, 'ProximityNear': s['near']}
+
+    def changed(self, ch):
+        self.PropertiesChanged(IFACE, ch, [])
+
+    def compass_changed(self, ch):
+        self.comp.PropertiesChanged(CIFACE, ch, [])
+
+    @dbus.service.signal(PROP, signature='sa{sv}as')
+    def PropertiesChanged(self, iface, changed, invalidated): pass
+
+    @dbus.service.method(PROP, in_signature='ss', out_signature='v')
+    def Get(self, iface, name): return self.props()[name]
+
+    @dbus.service.method(PROP, in_signature='s', out_signature='a{sv}')
+    def GetAll(self, iface): return self.props()
+
+    def claim(self, kind, sender, on):
+        s = self.d.claims[kind]
+        (s.add if on else s.discard)(sender)
+        self.d.apply()
+
+    @dbus.service.method(IFACE, sender_keyword='sender')
+    def ClaimAccelerometer(self, sender=None): self.claim('accel', sender, True)
+    @dbus.service.method(IFACE, sender_keyword='sender')
+    def ReleaseAccelerometer(self, sender=None): self.claim('accel', sender, False)
+    @dbus.service.method(IFACE, sender_keyword='sender')
+    def ClaimLight(self, sender=None): self.claim('light', sender, True)
+    @dbus.service.method(IFACE, sender_keyword='sender')
+    def ReleaseLight(self, sender=None): self.claim('light', sender, False)
+    @dbus.service.method(IFACE, sender_keyword='sender')
+    def ClaimProximity(self, sender=None): self.claim('prox', sender, True)
+    @dbus.service.method(IFACE, sender_keyword='sender')
+    def ReleaseProximity(self, sender=None): self.claim('prox', sender, False)
+
+class Compass(dbus.service.Object):
+    def __init__(self, bus, name, svc):
+        super().__init__(bus, CPATH, bus_name=name); self.svc = svc
+    def props(self): return {'HasCompass': True, 'CompassHeading': self.svc.d.state['heading']}
+    @dbus.service.signal(PROP, signature='sa{sv}as')
+    def PropertiesChanged(self, iface, changed, invalidated): pass
+    @dbus.service.method(PROP, in_signature='ss', out_signature='v')
+    def Get(self, iface, name): return self.props()[name]
+    @dbus.service.method(PROP, in_signature='s', out_signature='a{sv}')
+    def GetAll(self, iface): return self.props()
+    @dbus.service.method(CIFACE, sender_keyword='sender')
+    def ClaimCompass(self, sender=None): self.svc.claim('compass', sender, True)
+    @dbus.service.method(CIFACE, sender_keyword='sender')
+    def ReleaseCompass(self, sender=None): self.svc.claim('compass', sender, False)
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    d = Daemon(); svc = Service(bus, d)
+    loop = GLib.MainLoop()
+    GLib.timeout_add(250, d.tick)
+    def stop(*a):
+        try:
+            if d.hub: d.hub.power_off()
+        finally: loop.quit()
+    signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
+    log('s10-sensord running')
+    loop.run()
+
+if __name__ == '__main__': main()

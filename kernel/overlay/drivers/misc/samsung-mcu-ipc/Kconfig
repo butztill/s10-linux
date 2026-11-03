@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+config SAMSUNG_EXYNOS9820_MCU_IPC
+	tristate "Samsung Exynos 9820 CP mailbox (S10)"
+	depends on ARCH_EXYNOS && OF
+	default n
+	help
+	  Support the Samsung MCU_IPC mailbox used by the Exynos 9820 CP on
+	  Galaxy S10-family devices. This is the legacy Samsung mailbox API
+	  consumed by the S5000AP SIPC modem stack; it is not a generic mailbox
+	  controller driver.
+
+	  Keep this disabled unless the matching S10 CP mailbox node and its
+	  interrupt mapping have been reviewed in the device tree. Enabling this
+	  driver clears AP-generated pending mailbox interrupts when it probes.

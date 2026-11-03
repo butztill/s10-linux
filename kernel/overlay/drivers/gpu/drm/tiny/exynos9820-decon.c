@@ -1,0 +1,886 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * KMS driver for the Exynos9820 DECON0 display path left running by the
+ * bootloader (Samsung Galaxy S10, MIPI command-mode panel with TE trigger).
+ *
+ * The bootloader configures DSIM, D-PHY, the panel, clocks and DECON0, and
+ * scans out window 5 from DPU DMA channel 0 with the hardware trigger
+ * permanently unmasked. This driver keeps all of that and only flips the
+ * DMA source, following the stock 4.14 per-frame sequence
+ * (dpp_reg_configure_params + __decon_update_regs): program the IDMA source
+ * offset/size, image size and base address, then request the window and
+ * global shadow update. The next TE latches the shadow registers.
+ *
+ * DMA channel 0 sits behind SysMMU DPU0. With "iommus" in the DT node the
+ * scanout buffers may be scattered pages behind a contiguous IOVA, and the
+ * boot framebuffer stays identity-mapped through the reserved region's
+ * iommu-addresses so the running scanout survives the SysMMU switch-on.
+ * Without it the SysMMU stays in bypass and buffers must be physically
+ * contiguous (CMA). Either way addresses must fit in 32 bits
+ * (IDMA_IN_BASE_ADDR_Y).
+ */
+
+#include <linux/aperture.h>
+#include <linux/backlight.h>
+#include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/iopoll.h>
+#include <linux/module.h>
+#include <linux/ktime.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/of_reserved_mem.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/string.h>
+
+#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_connector.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fbdev_dma.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_managed.h>
+#include <drm/drm_modes.h>
+#include <drm/drm_print.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_rect.h>
+#include <drm/drm_simple_kms_helper.h>
+#include <drm/drm_vblank.h>
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/s10_decon.h>
+
+/* Opt-in A/B test; select once at boot so the vblank phase stays stable. */
+static bool flip_on_start;
+module_param(flip_on_start, bool, 0444);
+MODULE_PARM_DESC(flip_on_start, "Complete a latched flip at FRAME_START instead of FRAME_DONE");
+
+#define DRIVER_NAME		"exynos9820-decon"
+
+/* DECON registers (stock cal_9820/regs-decon.h) */
+#define GLOBAL_CONTROL			0x0000
+#define GLOBAL_CONTROL_RUN_STATUS	BIT(4)
+#define INTERRUPT_ENABLE		0x0040
+#define DPU_FRAME_START_INT_EN		BIT(12)
+#define DPU_FRAME_DONE_INT_EN		BIT(13)
+#define DPU_INT_EN			BIT(0)
+#define EXTRA_INTERRUPT_ENABLE		0x0044
+#define INTERRUPT_PENDING		0x004c
+#define DPU_FRAME_DONE_INT_PEND		BIT(13)
+#define DPU_FRAME_START_INT_PEND	BIT(12)
+#define DPU_EXTRA_INT_PEND		BIT(4)
+#define EXTRA_INTERRUPT_PENDING		0x0050
+#define SHADOW_REG_UPDATE_REQ		0x0060
+#define SHADOW_REG_UPDATE_REQ_WIN(w)	BIT(w)
+#define SHADOW_REG_UPDATE_REQ_GLOBAL	BIT(31)
+
+/* DPU DMA (IDMA) registers (stock cal_9820/regs-dpp.h) */
+#define IDMA_SRC_SIZE			0x0010
+#define IDMA_SRC_OFFSET			0x0014
+#define IDMA_IMG_SIZE			0x0018
+#define IDMA_IN_BASE_ADDR_Y		0x0040
+#define IDMA_IN_BASE_ADDR_C		0x0044
+
+/* DSIM0 registers (stock cal_9820/regs-dsim.h, confirmed in the stock binary) */
+#define DSIM_PKTHDR			0x0058
+#define DSIM_PKTHDR_DATA		GENMASK(24, 0)
+#define DSIM_PAYLOAD			0x005c
+#define DSIM_FIFOCTRL			0x0068
+#define DSIM_FIFOCTRL_EMPTY_PH_SFR	BIT(10)
+#define DSIM_FIFOCTRL_NUM_PH_SFR(v)	(((v) >> 16) & 0x3f)
+#define DSIM_FIFOCTRL_PH_THRESHOLD	32
+
+/* MIPI DSI data types used by the stock panel driver */
+#define DSI_DCS_SHORT_WRITE		0x05
+#define DSI_DCS_LONG_WRITE		0x39
+
+/* window fed by DMA channel 0 (stock DT: default_win = 5, default_ch = 0) */
+#define DECON_WIN			5
+
+#define UPDATE_TIMEOUT_US		(100 * USEC_PER_MSEC)
+
+struct s10_decon {
+	struct drm_device drm;
+	struct drm_simple_display_pipe pipe;
+	struct drm_connector connector;
+	struct drm_display_mode mode;
+	struct backlight_device *backlight;
+	struct mutex panel_lock;
+
+	void __iomem *decon;
+	void __iomem *dma;
+	void __iomem *dsim;
+	bool panel_on;
+	bool backlight_blanked;
+	int brightness;
+	u32 boot_fb_addr;
+	u32 boot_fb_pitch;
+
+	/* flip completion, protected by drm.event_lock */
+	struct drm_pending_vblank_event *event;
+	u64 commit_id;
+	u64 update_ns;
+	u32 fb_id;
+};
+
+static struct s10_decon *to_s10_decon(struct drm_device *drm)
+{
+	return container_of(drm, struct s10_decon, drm);
+}
+
+static const u32 s10_decon_formats[] = {
+	/* IDMA format 0 as programmed by the bootloader; DPP alpha is per-frame */
+	DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_ARGB8888,
+};
+
+static bool s10_decon_update_pending(struct s10_decon *priv)
+{
+	return readl(priv->decon + SHADOW_REG_UPDATE_REQ) &
+	       (SHADOW_REG_UPDATE_REQ_WIN(DECON_WIN) | SHADOW_REG_UPDATE_REQ_GLOBAL);
+}
+
+static void s10_decon_scanout(struct s10_decon *priv, u32 addr, u32 pitch,
+			      u32 fb_height, u32 x, u32 y, u32 w, u32 h)
+{
+	/* IDMA_SRC_SIZE describes the whole source surface in pixels */
+	writel((y << 16) | x, priv->dma + IDMA_SRC_OFFSET);
+	writel((fb_height << 16) | (pitch / 4), priv->dma + IDMA_SRC_SIZE);
+	writel((h << 16) | w, priv->dma + IDMA_IMG_SIZE);
+	writel(addr, priv->dma + IDMA_IN_BASE_ADDR_Y);
+	writel(addr, priv->dma + IDMA_IN_BASE_ADDR_C);
+
+	writel(readl(priv->decon + SHADOW_REG_UPDATE_REQ) |
+	       SHADOW_REG_UPDATE_REQ_WIN(DECON_WIN) | SHADOW_REG_UPDATE_REQ_GLOBAL,
+	       priv->decon + SHADOW_REG_UPDATE_REQ);
+}
+
+static int s10_decon_wait_update(struct s10_decon *priv)
+{
+	u32 val;
+
+	return readl_poll_timeout(priv->decon + SHADOW_REG_UPDATE_REQ, val,
+				  !(val & (SHADOW_REG_UPDATE_REQ_WIN(DECON_WIN) |
+					   SHADOW_REG_UPDATE_REQ_GLOBAL)),
+				  200, UPDATE_TIMEOUT_US);
+}
+
+static int s10_dsim_wait_ph_empty(struct s10_decon *priv)
+{
+	u32 val;
+
+	return readl_poll_timeout(priv->dsim + DSIM_FIFOCTRL, val,
+				  val & DSIM_FIFOCTRL_EMPTY_PH_SFR, 100,
+				  50 * USEC_PER_MSEC);
+}
+
+/*
+ * Send one DCS write, as stock dsim_write_data(): long payload words first,
+ * then the packet header; the DSIM interleaves it with frame transfers.
+ */
+static int s10_dsim_dcs_write(struct s10_decon *priv, const u8 *buf, size_t len)
+{
+	u32 hdr, val;
+	size_t i;
+
+	if (!len || len > 0xffff)
+		return -EINVAL;
+	val = readl(priv->dsim + DSIM_FIFOCTRL);
+	if (DSIM_FIFOCTRL_NUM_PH_SFR(val) >= DSIM_FIFOCTRL_PH_THRESHOLD)
+		return -EBUSY;
+
+	if (len == 1) {
+		hdr = DSI_DCS_SHORT_WRITE | buf[0] << 8;
+	} else {
+		/* Match Samsung's panel_dsi_write_data(): all multi-byte DCS
+		 * commands use a long-write packet, including 2-byte commands.
+		 */
+		for (i = 0; i < len; i += 4) {
+			u32 word = 0;
+			size_t b;
+
+			for (b = 0; b < 4 && i + b < len; b++)
+				word |= buf[i + b] << (8 * b);
+			writel(word, priv->dsim + DSIM_PAYLOAD);
+		}
+		hdr = DSI_DCS_LONG_WRITE | (len & 0xff) << 8 | (len >> 8) << 16;
+	}
+	writel((readl(priv->dsim + DSIM_PKTHDR) & ~DSIM_PKTHDR_DATA) | hdr,
+	       priv->dsim + DSIM_PKTHDR);
+
+	return s10_dsim_wait_ph_empty(priv);
+}
+
+/* s6e3ha9 (beyond1) level-1 key, display on/off, sleep in/out (stock panel tables) */
+static const u8 s6e3ha9_key1_enable[] = { 0x9f, 0xa5, 0xa5 };
+static const u8 s6e3ha9_key1_disable[] = { 0x9f, 0x5a, 0x5a };
+static const u8 s6e3ha9_display_on[] = { 0x29 };
+static const u8 s6e3ha9_display_off[] = { 0x28 };
+static const u8 s6e3ha9_sleep_out[] = { 0x11 };
+static const u8 s6e3ha9_sleep_in[] = { 0x10 };
+static const u8 s6e3ha9_key2_enable[] = { 0xf0, 0x5a, 0x5a };
+static const u8 s6e3ha9_key2_disable[] = { 0xf0, 0xa5, 0xa5 };
+/* 1440x3040, scaler off: beyond1 scaler/caset/paset_table[1][0] */
+static const u8 s6e3ha9_scaler[] = { 0xba, 0x01, 0x26, 0x08, 0x08, 0xf3 };
+static const u8 s6e3ha9_caset[] = { 0x2a, 0x00, 0x00, 0x05, 0x9f };
+static const u8 s6e3ha9_paset[] = { 0x2b, 0x00, 0x00, 0x0b, 0xdf };
+static const u8 s6e3ha9_set_area[] = { 0x1a, 0x1f, 0x00, 0x00, 0x00, 0x00 };
+static const u8 s6e3ha9_te_on[] = { 0x35, 0x00 };
+static const u8 s6e3ha9_self_mask_disable[] = { 0x7a, 0x00 };
+static const u8 s6e3ha9_gamma_update[] = { 0xf7, 0x03 };
+
+/*
+ * Beyond1 A3 S0 stock brightness points and AOR values, copied from Samsung's
+ * GPL panel tables. This subset adjusts panel luminance without replacing the
+ * bootloader-programmed, panel-specific gamma/MTP calibration.
+ */
+static const u8 s6e3ha9_brightness_points[] = {
+	0, 7, 14, 21, 28, 35, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54,
+	56, 57, 59, 61, 63, 65, 67, 69, 70, 72, 74, 76, 78, 80, 82, 84,
+	86, 88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108, 110, 112,
+	114, 116, 118, 120, 122, 124, 126, 128, 135, 142, 149, 157, 165,
+	174, 183, 193, 201, 210, 219, 223, 227, 230, 234, 238, 242, 246,
+	250, 255,
+};
+
+static const u16 s6e3ha9_aor_values[] = {
+	0x0bc9, 0x0bb0, 0x0b93, 0x0b77, 0x0b5f, 0x0b41, 0x0b20, 0x0b0a,
+	0x0ae2, 0x0ac1, 0x0a97, 0x0a72, 0x0a4f, 0x0a1e, 0x0a01, 0x09e0,
+	0x09a1, 0x0982, 0x095e, 0x0940, 0x0901, 0x08e2, 0x08a3, 0x085f,
+	0x083f, 0x0803, 0x07bd, 0x0752, 0x071f, 0x06d7, 0x066b, 0x0601,
+	0x05aa, 0x053a, 0x04c1, 0x0476, 0x0476, 0x0476, 0x0476, 0x0476,
+	0x0476, 0x0476, 0x0476, 0x0476, 0x0476, 0x0476, 0x0476, 0x0476,
+	0x0476, 0x0476, 0x0476, 0x0476, 0x0476, 0x0463, 0x03b9, 0x0321,
+	0x025f, 0x018f, 0x014f, 0x014f, 0x014f, 0x014f, 0x014f, 0x014f,
+	0x014f, 0x014f, 0x0147, 0x0100, 0x00d2, 0x008d, 0x003a, 0x0014,
+	0x0014, 0x0014,
+};
+
+#define S10_DCS(priv, seq) s10_dsim_dcs_write(priv, seq, sizeof(seq))
+
+/* Samsung panel command keys are hierarchical: level 2 requires level 1. */
+static int s10_panel_key2_enable(struct s10_decon *priv)
+{
+	int ret;
+
+	ret = S10_DCS(priv, s6e3ha9_key1_enable);
+	if (!ret)
+		ret = S10_DCS(priv, s6e3ha9_key2_enable);
+	if (ret) {
+		S10_DCS(priv, s6e3ha9_key2_disable);
+		S10_DCS(priv, s6e3ha9_key1_disable);
+	}
+
+	return ret;
+}
+
+static int s10_panel_key2_disable(struct s10_decon *priv)
+{
+	int ret, lock_ret;
+
+	ret = S10_DCS(priv, s6e3ha9_key2_disable);
+	lock_ret = S10_DCS(priv, s6e3ha9_key1_disable);
+
+	return ret ?: lock_ret;
+}
+
+static int s10_panel_key2_write(struct s10_decon *priv, const u8 *seq,
+				size_t len)
+{
+	int ret, lock_ret;
+
+	ret = s10_panel_key2_enable(priv);
+	if (ret)
+		return ret;
+	ret = s10_dsim_dcs_write(priv, seq, len);
+	lock_ret = s10_panel_key2_disable(priv);
+
+	return ret ?: lock_ret;
+}
+
+static int s10_panel_set_display(struct s10_decon *priv, bool on)
+{
+	const u8 *cmd = on ? s6e3ha9_display_on : s6e3ha9_display_off;
+	size_t len = on ? sizeof(s6e3ha9_display_on) :
+			  sizeof(s6e3ha9_display_off);
+	int ret, lock_ret;
+
+	ret = S10_DCS(priv, s6e3ha9_key1_enable);
+	if (!ret)
+		ret = s10_dsim_dcs_write(priv, cmd, len);
+	lock_ret = S10_DCS(priv, s6e3ha9_key1_disable);
+
+	return ret ?: lock_ret;
+}
+
+static u16 s10_aor_for_brightness(int brightness)
+{
+	size_t i;
+
+	brightness = clamp(brightness, 0, 255);
+	for (i = 1; i < ARRAY_SIZE(s6e3ha9_brightness_points); i++) {
+		int lo = s6e3ha9_brightness_points[i - 1];
+		int hi = s6e3ha9_brightness_points[i];
+
+		if (brightness <= hi) {
+			int aor_lo = s6e3ha9_aor_values[i - 1];
+			int aor_hi = s6e3ha9_aor_values[i];
+
+			return aor_lo + (aor_hi - aor_lo) *
+				(brightness - lo) / (hi - lo);
+		}
+	}
+
+	return s6e3ha9_aor_values[ARRAY_SIZE(s6e3ha9_aor_values) - 1];
+}
+
+static int s10_panel_set_aor(struct s10_decon *priv, int brightness)
+{
+	u16 aor = s10_aor_for_brightness(brightness);
+	u8 aor_cmd[] = { 0xb1, aor >> 8, aor & 0xff };
+	int ret, lock_ret;
+
+	ret = s10_panel_key2_enable(priv);
+	if (ret)
+		return ret;
+	ret = s10_dsim_dcs_write(priv, aor_cmd, sizeof(aor_cmd));
+	ret = ret ?: S10_DCS(priv, s6e3ha9_gamma_update);
+	lock_ret = s10_panel_key2_disable(priv);
+
+	return ret ?: lock_ret;
+}
+
+static int s10_panel_backlight_update(struct backlight_device *bd)
+{
+	struct s10_decon *priv = bl_get_data(bd);
+	int brightness = bd->props.brightness;
+	int ret = 0;
+
+	mutex_lock(&priv->panel_lock);
+	priv->brightness = brightness;
+	if (!priv->panel_on)
+		goto out;
+
+	if (backlight_is_blank(bd) || !brightness) {
+		if (!priv->backlight_blanked)
+			ret = s10_panel_set_display(priv, false);
+		priv->backlight_blanked = true;
+	} else {
+		ret = s10_panel_set_aor(priv, brightness);
+		if (!ret && priv->backlight_blanked) {
+			ret = s10_panel_set_display(priv, true);
+			priv->backlight_blanked = false;
+		}
+	}
+out:
+	mutex_unlock(&priv->panel_lock);
+	return ret;
+}
+
+static int s10_panel_backlight_get(struct backlight_device *bd)
+{
+	struct s10_decon *priv = bl_get_data(bd);
+
+	return READ_ONCE(priv->brightness);
+}
+
+static const struct backlight_ops s10_panel_backlight_ops = {
+	.options = BL_CORE_SUSPENDRESUME,
+	.update_status = s10_panel_backlight_update,
+	.get_brightness = s10_panel_backlight_get,
+};
+
+/* stock display_off_cmdtbl + exit_cmdtbl: display off, sleep in, 120 ms */
+static int s10_panel_off(struct s10_decon *priv)
+{
+	int ret;
+
+	ret = S10_DCS(priv, s6e3ha9_key1_enable);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_display_off);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_sleep_in);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_key1_disable);
+	msleep(120);
+	return ret;
+}
+
+/* stock init_cmdtbl after sleep out (scan geometry); keep the faulty
+ * panel self-mask disabled and restore the saved AOR brightness on wake.
+ */
+static int s10_panel_on(struct s10_decon *priv)
+{
+	int ret;
+
+	ret = S10_DCS(priv, s6e3ha9_sleep_out);
+	msleep(120);
+	ret = ret ?: s10_panel_key2_write(priv, s6e3ha9_scaler,
+						 sizeof(s6e3ha9_scaler));
+	ret = ret ?: S10_DCS(priv, s6e3ha9_caset);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_paset);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_key1_enable);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_set_area);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_te_on);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_key1_disable);
+	if (ret)
+		return ret;
+
+	ret = s10_panel_key2_write(priv, s6e3ha9_self_mask_disable,
+				   sizeof(s6e3ha9_self_mask_disable));
+	if (ret)
+		return ret;
+
+	ret = ret ?: S10_DCS(priv, s6e3ha9_key1_enable);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_display_on);
+	ret = ret ?: S10_DCS(priv, s6e3ha9_key1_disable);
+	if (!ret) {
+		priv->backlight_blanked = false;
+		if (backlight_is_blank(priv->backlight) || !priv->brightness) {
+			ret = s10_panel_set_display(priv, false);
+			priv->backlight_blanked = true;
+		} else {
+			ret = s10_panel_set_aor(priv, priv->brightness);
+		}
+	}
+	return ret;
+}
+
+static irqreturn_t s10_decon_irq(int irq, void *arg)
+{
+	struct s10_decon *priv = arg;
+	struct drm_crtc *crtc = &priv->pipe.crtc;
+	unsigned long flags;
+	u32 pend;
+
+	pend = readl(priv->decon + INTERRUPT_PENDING);
+	if (!(pend & (DPU_FRAME_DONE_INT_PEND | DPU_FRAME_START_INT_PEND |
+		      DPU_EXTRA_INT_PEND)))
+		return IRQ_NONE;
+
+	/* write-one-to-clear, as stock decon_reg_get_interrupt_and_clear() */
+	if (pend & DPU_EXTRA_INT_PEND)
+		writel(readl(priv->decon + EXTRA_INTERRUPT_PENDING),
+		       priv->decon + EXTRA_INTERRUPT_PENDING);
+	writel(pend & (DPU_FRAME_DONE_INT_PEND | DPU_FRAME_START_INT_PEND |
+		       DPU_EXTRA_INT_PEND), priv->decon + INTERRUPT_PENDING);
+
+	spin_lock_irqsave(&priv->drm.event_lock, flags);
+	if (trace_s10_decon_frame_enabled()) {
+		u32 shadow = readl(priv->decon + SHADOW_REG_UPDATE_REQ);
+		u64 age = priv->update_ns ? ktime_get_ns() - priv->update_ns : 0;
+
+		if (pend & DPU_FRAME_START_INT_PEND)
+			trace_s10_decon_frame(1, priv->commit_id, priv->fb_id, pend, shadow, age);
+		if (pend & DPU_FRAME_DONE_INT_PEND)
+			trace_s10_decon_frame(2, priv->commit_id, priv->fb_id, pend, shadow, age);
+	}
+	spin_unlock_irqrestore(&priv->drm.event_lock, flags);
+
+	if (!(pend & (flip_on_start ? DPU_FRAME_START_INT_PEND : DPU_FRAME_DONE_INT_PEND)))
+		return IRQ_HANDLED;
+
+	drm_crtc_handle_vblank(crtc);
+
+	/*
+	 * Samsung's command-mode update path waits for FRAME_START followed by
+	 * shadow-update completion before releasing old buffers. Retain that
+	 * latch guard in both modes: an IRQ with the request still pending is
+	 * for the previous buffer. FRAME_DONE remains the default A/B fallback.
+	 */
+	spin_lock_irqsave(&priv->drm.event_lock, flags);
+	if (priv->event && !s10_decon_update_pending(priv)) {
+		trace_s10_decon_frame(3, priv->commit_id, priv->fb_id, pend,
+			readl(priv->decon + SHADOW_REG_UPDATE_REQ),
+			ktime_get_ns() - priv->update_ns);
+		drm_crtc_send_vblank_event(crtc, priv->event);
+		drm_crtc_vblank_put(crtc);
+		priv->event = NULL;
+	}
+	spin_unlock_irqrestore(&priv->drm.event_lock, flags);
+
+	return IRQ_HANDLED;
+}
+
+static enum drm_mode_status
+s10_decon_mode_valid(struct drm_simple_display_pipe *pipe,
+		     const struct drm_display_mode *mode)
+{
+	struct s10_decon *priv = to_s10_decon(pipe->crtc.dev);
+
+	if (mode->hdisplay != priv->mode.hdisplay ||
+	    mode->vdisplay != priv->mode.vdisplay)
+		return MODE_ONE_SIZE;
+	return MODE_OK;
+}
+
+static int s10_decon_check(struct drm_simple_display_pipe *pipe,
+			   struct drm_plane_state *plane_state,
+			   struct drm_crtc_state *crtc_state)
+{
+	struct drm_framebuffer *fb = plane_state->fb;
+	int ret;
+
+	ret = drm_atomic_helper_check_plane_state(plane_state, crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  false, false);
+	if (ret || !plane_state->visible)
+		return ret;
+
+	/* window 5 covers the whole panel; the DMA cannot scale or position */
+	if (plane_state->dst.x1 || plane_state->dst.y1 ||
+	    drm_rect_width(&plane_state->dst) != crtc_state->mode.hdisplay ||
+	    drm_rect_height(&plane_state->dst) != crtc_state->mode.vdisplay)
+		return -EINVAL;
+	if (fb->pitches[0] % 4)
+		return -EINVAL;
+	return 0;
+}
+
+static void s10_decon_update(struct drm_simple_display_pipe *pipe,
+			     struct drm_plane_state *old_state)
+{
+	struct s10_decon *priv = to_s10_decon(pipe->crtc.dev);
+	struct drm_plane_state *state = pipe->plane.state;
+	struct drm_crtc *crtc = &pipe->crtc;
+	struct drm_pending_vblank_event *event = crtc->state->event;
+	struct drm_framebuffer *fb = state->fb;
+	bool have_vblank = event && !drm_crtc_vblank_get(crtc);
+	unsigned long flags;
+
+	crtc->state->event = NULL;
+	spin_lock_irqsave(&priv->drm.event_lock, flags);
+	priv->commit_id++;
+	priv->update_ns = ktime_get_ns();
+	priv->fb_id = fb ? fb->base.id : 0;
+
+	if (fb && state->visible) {
+		dma_addr_t addr = drm_fb_dma_get_gem_obj(fb, 0)->dma_addr + fb->offsets[0];
+
+		s10_decon_scanout(priv, addr, fb->pitches[0], fb->height,
+				  state->src.x1 >> 16, state->src.y1 >> 16,
+				  drm_rect_width(&state->dst),
+				  drm_rect_height(&state->dst));
+	}
+	trace_s10_decon_frame(0, priv->commit_id, priv->fb_id, 0,
+		readl(priv->decon + SHADOW_REG_UPDATE_REQ), 0);
+
+	if (event) {
+		if (have_vblank) {
+			WARN_ON(priv->event);
+			priv->event = event;
+		} else {
+			drm_crtc_send_vblank_event(crtc, event);
+		}
+	}
+	spin_unlock_irqrestore(&priv->drm.event_lock, flags);
+}
+
+static void s10_decon_enable(struct drm_simple_display_pipe *pipe,
+			     struct drm_crtc_state *crtc_state,
+			     struct drm_plane_state *plane_state)
+{
+	struct s10_decon *priv = to_s10_decon(pipe->crtc.dev);
+
+	/* DECON and DSIM keep running as the bootloader left them */
+	if (!priv->panel_on) {
+		mutex_lock(&priv->panel_lock);
+		if (s10_panel_on(priv))
+			drm_warn(&priv->drm, "panel wake-up commands failed\n");
+		priv->panel_on = true;
+		mutex_unlock(&priv->panel_lock);
+	}
+	drm_crtc_vblank_on(&pipe->crtc);
+}
+
+static void s10_decon_disable(struct drm_simple_display_pipe *pipe)
+{
+	struct s10_decon *priv = to_s10_decon(pipe->crtc.dev);
+
+	/*
+	 * Point the DMA back at the reserved boot framebuffer before our
+	 * buffers can be freed; the panel keeps refreshing from it.
+	 */
+	s10_decon_scanout(priv, priv->boot_fb_addr, priv->boot_fb_pitch,
+			  priv->mode.vdisplay, 0, 0,
+			  priv->mode.hdisplay, priv->mode.vdisplay);
+	if (s10_decon_wait_update(priv))
+		drm_warn(&priv->drm, "boot framebuffer restore did not latch\n");
+	drm_crtc_vblank_off(&pipe->crtc);
+
+	/* after the restore latched: the panel stops sending TE once asleep */
+	if (priv->panel_on) {
+		mutex_lock(&priv->panel_lock);
+		if (s10_panel_off(priv))
+			drm_warn(&priv->drm, "panel sleep commands failed\n");
+		priv->panel_on = false;
+		mutex_unlock(&priv->panel_lock);
+	}
+}
+
+static int s10_decon_enable_vblank(struct drm_simple_display_pipe *pipe)
+{
+	return 0; /* frame-done interrupts stay enabled */
+}
+
+static void s10_decon_disable_vblank(struct drm_simple_display_pipe *pipe)
+{
+}
+
+static const struct drm_simple_display_pipe_funcs s10_decon_pipe_funcs = {
+	.mode_valid = s10_decon_mode_valid,
+	.check = s10_decon_check,
+	.enable = s10_decon_enable,
+	.disable = s10_decon_disable,
+	.update = s10_decon_update,
+	.enable_vblank = s10_decon_enable_vblank,
+	.disable_vblank = s10_decon_disable_vblank,
+};
+
+static int s10_decon_connector_get_modes(struct drm_connector *connector)
+{
+	struct s10_decon *priv = to_s10_decon(connector->dev);
+
+	return drm_connector_helper_get_modes_fixed(connector, &priv->mode);
+}
+
+static const struct drm_connector_helper_funcs s10_decon_connector_helper_funcs = {
+	.get_modes = s10_decon_connector_get_modes,
+};
+
+static const struct drm_connector_funcs s10_decon_connector_funcs = {
+	.reset = drm_atomic_helper_connector_reset,
+	.fill_modes = drm_helper_probe_single_connector_modes,
+	.destroy = drm_connector_cleanup,
+	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
+};
+
+static const struct drm_mode_config_funcs s10_decon_mode_config_funcs = {
+	.fb_create = drm_gem_fb_create,
+	.atomic_check = drm_atomic_helper_check,
+	.atomic_commit = drm_atomic_helper_commit,
+};
+
+DEFINE_DRM_GEM_DMA_FOPS(s10_decon_fops);
+
+static const struct drm_driver s10_decon_driver = {
+	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+	.name = DRIVER_NAME,
+	.desc = "Exynos9820 DECON0 bootloader-display takeover",
+	.major = 1,
+	.minor = 0,
+	.fops = &s10_decon_fops,
+	DRM_GEM_DMA_DRIVER_OPS,
+	DRM_FBDEV_DMA_DRIVER_OPS,
+};
+
+static void s10_decon_pm_put(void *dev)
+{
+	pm_runtime_put_sync(dev);
+}
+
+static int s10_decon_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct device_node *boot_fb_np;
+	struct reserved_mem *boot_fb;
+	struct s10_decon *priv;
+	struct drm_device *drm;
+	u32 size, width_mm = 0, height_mm = 0;
+	int irq, irq_start, ret;
+
+	priv = devm_drm_dev_alloc(dev, &s10_decon_driver, struct s10_decon, drm);
+	if (IS_ERR(priv))
+		return PTR_ERR(priv);
+	drm = &priv->drm;
+
+	priv->decon = devm_platform_ioremap_resource_byname(pdev, "decon");
+	if (IS_ERR(priv->decon))
+		return PTR_ERR(priv->decon);
+	priv->dma = devm_platform_ioremap_resource_byname(pdev, "dma");
+	if (IS_ERR(priv->dma))
+		return PTR_ERR(priv->dma);
+	priv->dsim = devm_platform_ioremap_resource_byname(pdev, "dsim");
+	if (IS_ERR(priv->dsim))
+		return PTR_ERR(priv->dsim);
+	mutex_init(&priv->panel_lock);
+	priv->brightness = 128; /* Samsung UI_DEF_BRIGHTNESS */
+	/* the bootloader left the panel awake and displaying */
+	priv->panel_on = true;
+	/*
+	 * The boot framebuffer is reserved no-map memory, referenced through
+	 * memory-region (it is outside the soc bus ranges). Only its address
+	 * is used, as the scanout fallback; it is never mapped.
+	 */
+	boot_fb_np = of_parse_phandle(dev->of_node, "memory-region", 0);
+	boot_fb = boot_fb_np ? of_reserved_mem_lookup(boot_fb_np) : NULL;
+	of_node_put(boot_fb_np);
+	if (!boot_fb || boot_fb->base + boot_fb->size > SZ_4G)
+		return dev_err_probe(dev, -EINVAL, "missing boot framebuffer memory-region\n");
+	/* DECON routes FRAME_START and FRAME_DONE to distinct GIC SPIs. */
+	irq = platform_get_irq_byname_optional(pdev, "frame-done");
+	if (irq < 0)
+		irq = platform_get_irq(pdev, 0); /* original single-DONE DTB */
+	if (irq < 0)
+		return irq;
+	irq_start = platform_get_irq_byname_optional(pdev, "frame-start");
+	if (irq_start == -EPROBE_DEFER)
+		return irq_start;
+	if (flip_on_start && irq_start < 0)
+		return dev_err_probe(dev, irq_start, "FRAME_START mode requires its separate IRQ in the DTB\n");
+
+	if (!(readl(priv->decon + GLOBAL_CONTROL) & GLOBAL_CONTROL_RUN_STATUS))
+		return dev_err_probe(dev, -ENODEV,
+				     "DECON0 not running; bootloader display required\n");
+
+	/* the bootloader's full-screen image size gives the panel mode */
+	size = readl(priv->dma + IDMA_IMG_SIZE);
+	of_property_read_u32(dev->of_node, "width-mm", &width_mm);
+	of_property_read_u32(dev->of_node, "height-mm", &height_mm);
+	priv->mode = (struct drm_display_mode) {
+		DRM_MODE_INIT(60, size & 0x1fff, (size >> 16) & 0x1fff,
+			      width_mm, height_mm)
+	};
+	if (!priv->mode.hdisplay || !priv->mode.vdisplay)
+		return dev_err_probe(dev, -ENODEV, "bad IDMA image size %#x\n", size);
+	priv->boot_fb_addr = boot_fb->base;
+	priv->boot_fb_pitch = priv->mode.hdisplay * 4;
+
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return ret;
+
+	/*
+	 * The SysMMU follows our runtime PM state through its device link;
+	 * holding a reference is what switches translation on.
+	 */
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		return ret;
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret)
+		return ret;
+	ret = devm_add_action_or_reset(dev, s10_decon_pm_put, dev);
+	if (ret)
+		return ret;
+	drm_info(drm, "flip completion at FRAME_%s\n", flip_on_start ? "START" : "DONE");
+	drm_info(drm, "scanout through %s\n",
+		 device_iommu_mapped(dev) ? "SysMMU DPU0" : "physical addresses (no IOMMU)");
+
+	ret = drmm_mode_config_init(drm);
+	if (ret)
+		return ret;
+	drm->mode_config.min_width = priv->mode.hdisplay;
+	drm->mode_config.max_width = priv->mode.hdisplay;
+	drm->mode_config.min_height = priv->mode.vdisplay;
+	drm->mode_config.max_height = priv->mode.vdisplay;
+	drm->mode_config.preferred_depth = 24;
+	drm->mode_config.funcs = &s10_decon_mode_config_funcs;
+
+	ret = drm_connector_init(drm, &priv->connector, &s10_decon_connector_funcs,
+				 DRM_MODE_CONNECTOR_DSI);
+	if (ret)
+		return ret;
+	drm_connector_helper_add(&priv->connector, &s10_decon_connector_helper_funcs);
+	drm_connector_set_panel_orientation_with_quirk(&priv->connector,
+						       DRM_MODE_PANEL_ORIENTATION_UNKNOWN,
+						       priv->mode.hdisplay,
+						       priv->mode.vdisplay);
+
+	ret = drm_simple_display_pipe_init(drm, &priv->pipe, &s10_decon_pipe_funcs,
+					   s10_decon_formats,
+					   ARRAY_SIZE(s10_decon_formats),
+					   NULL, &priv->connector);
+	if (ret)
+		return ret;
+
+	priv->backlight = devm_backlight_device_register(dev, "s10-panel", dev,
+							priv,
+							&s10_panel_backlight_ops,
+							&(struct backlight_properties) {
+								.type = BACKLIGHT_RAW,
+								.brightness = 128,
+								.max_brightness = 255,
+							});
+	if (IS_ERR(priv->backlight))
+		return dev_err_probe(dev, PTR_ERR(priv->backlight),
+				     "failed to register panel backlight\n");
+
+	ret = drm_vblank_init(drm, 1);
+	if (ret)
+		return ret;
+
+	drm_mode_config_reset(drm);
+
+	/* clear what accumulated since the bootloader, then take interrupts */
+	writel(DPU_FRAME_DONE_INT_PEND | DPU_FRAME_START_INT_PEND | DPU_EXTRA_INT_PEND,
+	       priv->decon + INTERRUPT_PENDING);
+	writel(readl(priv->decon + INTERRUPT_ENABLE) | DPU_FRAME_DONE_INT_EN |
+	       (irq_start >= 0 ? DPU_FRAME_START_INT_EN : 0) | DPU_INT_EN,
+	       priv->decon + INTERRUPT_ENABLE);
+	ret = devm_request_irq(dev, irq, s10_decon_irq, 0, DRIVER_NAME, priv);
+	if (ret)
+		return ret;
+	if (irq_start >= 0 && irq_start != irq) {
+		ret = devm_request_irq(dev, irq_start, s10_decon_irq, 0, DRIVER_NAME "-start", priv);
+		if (ret)
+			return ret;
+	}
+	drm_info(drm, "frame IRQs: DONE=%d START=%d\n", irq, irq_start);
+
+	/*
+	 * Take the boot framebuffer away from simpledrm only once nothing
+	 * else can fail, so a failed probe leaves the console working.
+	 */
+	ret = aperture_remove_conflicting_devices(boot_fb->base, boot_fb->size,
+						  DRIVER_NAME);
+	if (ret)
+		return ret;
+
+	platform_set_drvdata(pdev, drm);
+	ret = drm_dev_register(drm, 0);
+	if (ret)
+		return ret;
+
+	drm_client_setup_with_fourcc(drm, DRM_FORMAT_XRGB8888);
+	return 0;
+}
+
+static void s10_decon_remove(struct platform_device *pdev)
+{
+	struct drm_device *drm = platform_get_drvdata(pdev);
+
+	drm_dev_unplug(drm);
+	drm_atomic_helper_shutdown(drm);
+}
+
+static void s10_decon_shutdown(struct platform_device *pdev)
+{
+	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
+}
+
+static const struct of_device_id s10_decon_of_match[] = {
+	{ .compatible = "samsung,exynos9820-decon-takeover" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, s10_decon_of_match);
+
+static struct platform_driver s10_decon_platform_driver = {
+	.driver = {
+		.name = DRIVER_NAME,
+		.of_match_table = s10_decon_of_match,
+	},
+	.probe = s10_decon_probe,
+	.remove = s10_decon_remove,
+	.shutdown = s10_decon_shutdown,
+};
+module_platform_driver(s10_decon_platform_driver);
+
+MODULE_DESCRIPTION("Exynos9820 DECON0 bootloader-display takeover KMS driver");
+MODULE_LICENSE("GPL");

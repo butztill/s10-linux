@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_job.c	2026-10-20 17:32:25.482000000 +0000
++++ b/drivers/gpu/drm/panfrost/panfrost_job.c	2026-10-20 17:32:26.199391372 +0000
+@@ -23,6 +23,11 @@
+ #include "panfrost_dump.h"
+ 
+ #define MAX_JM_CTX_PER_FILE 64
++/* Exynos 9820 bring-up experiment: always perform the start-of-job flush. */
++static bool panfrost_no_flush_reduction;
++module_param_named(no_flush_reduction, panfrost_no_flush_reduction, bool, 0644);
++MODULE_PARM_DESC(no_flush_reduction, "Disable job flush reduction (debug)");
++
+ #define JOB_TIMEOUT_MS 500
+ 
+ #define job_write(dev, reg, data) writel(data, dev->iomem + (reg))
+@@ -237,7 +242,8 @@
+ 		JS_CONFIG_END_FLUSH_CLEAN_INVALIDATE |
+ 		panfrost_get_job_chain_flag(job);
+ 
+-	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_FLUSH_REDUCTION))
++	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_FLUSH_REDUCTION) &&
++	    !panfrost_no_flush_reduction)
+ 		cfg |= JS_CONFIG_ENABLE_FLUSH_REDUCTION;
+ 
+ 	if (panfrost_has_hw_issue(pfdev, HW_ISSUE_10649))
+@@ -245,7 +251,8 @@
+ 
+ 	job_write(pfdev, JS_CONFIG_NEXT(js), cfg);
+ 
+-	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_FLUSH_REDUCTION))
++	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_FLUSH_REDUCTION) &&
++	    !panfrost_no_flush_reduction)
+ 		job_write(pfdev, JS_FLUSH_ID_NEXT(js), job->flush_id);
+ 
+ 	/* GO ! */

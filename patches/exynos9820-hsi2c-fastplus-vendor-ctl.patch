@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/i2c/busses/i2c-exynos5.c
++++ b/drivers/i2c/busses/i2c-exynos5.c
+@@ -468,11 +468,16 @@ static void exynos5_i2c_init(struct exynos5_i2c *i2c)
+ {
+ 	u32 i2c_conf = readl(i2c->regs + HSI2C_CONF);
+ 	u32 i2c_timeout = readl(i2c->regs + HSI2C_TIMEOUT);
++	u32 i2c_ctl = HSI2C_MASTER;
+ 
+ 	/* Clear to disable Timeout */
+ 	i2c_timeout &= ~HSI2C_TIMEOUT_EN;
+ 	writel(i2c_timeout, i2c->regs + HSI2C_TIMEOUT);
+ 
+-	writel((HSI2C_FUNC_MODE_I2C | HSI2C_MASTER),
+-					i2c->regs + HSI2C_CTL);
++	/* Samsung's Exynos9820 driver starts its Fast-Plus camera buses with
++	 * HSI2C_MASTER alone (CTL=0x08), unlike the generic upstream setup.
++	 */
++	if (!i2c->fast_plus_mode)
++		i2c_ctl |= HSI2C_FUNC_MODE_I2C;
++	writel(i2c_ctl, i2c->regs + HSI2C_CTL);
+ 	writel(HSI2C_TRAILING_COUNT, i2c->regs + HSI2C_TRAILIG_CTL);

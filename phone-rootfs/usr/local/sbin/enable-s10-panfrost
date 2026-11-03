@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Only for the tested local kernel/module; keep runtime PM disabled before probe.
+set -eu
+test "$(uname -r)" = 7.2.0-rc2-s10-panfrost1
+gpu=/sys/devices/platform/soc@0/18500000.gpu
+test -f "$gpu/power/control"
+if [ -d /sys/module/panfrost ]; then
+    test "$(cat "$gpu/power/control")" = on
+else
+    printf on | tee "$gpu/power/control" >/dev/null
+    modprobe panfrost
+fi
+test -L "$gpu/driver"
+echo 'Panfrost ready; GPU runtime PM kept disabled.'

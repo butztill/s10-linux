@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -688,10 +688,11 @@
+ 			formats_[fmt].push_back(&config);
+ 	}
+ 
+-	/* The experimental motor-code AF is specific to the verified S10 tele.
++	/* The experimental motor-code AF is specific to S10 tele/front AK7374 lenses.
+ 	 * Do not claim LensPosition (dioptres) without optical calibration. */
+ 	CameraLens *lens = sensor_->focusLens();
+-	if (sensor_->model() == "s5k3m3" && lens && lens->model() == "ak7374") {
++	if ((sensor_->model() == "s5k3m3" || sensor_->model() == "s5k3j1") &&
++	    lens && lens->model() == "ak7374") {
+ 		const auto &range = lens->controls().at(V4L2_CID_FOCUS_ABSOLUTE);
+ 		if (range.min().get<int32_t>() == 0 && range.max().get<int32_t>() == 511) {
+ 			autofocusAvailable_ = true;
+@@ -702,7 +703,7 @@
+ 			ctrls[&controls::AfState] = ControlInfo(0, 3);
+ 			ctrls[&controls::AfPauseState] = ControlInfo(0, 2);
+ 			controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
+-			LOG(SimplePipeline, Info) << "S10 tele contrast autofocus available";
++			LOG(SimplePipeline, Info) << "S10 " << sensor_->model() << " contrast autofocus available";
+ 		}
+ 	}
+ 

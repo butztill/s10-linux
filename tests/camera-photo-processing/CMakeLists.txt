@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+cmake_minimum_required(VERSION 3.22)
+project(s10_photo_processing LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui)
+find_package(Threads REQUIRED)
+set(PLASMA_CAMERA_SOURCE_DIR "" CACHE PATH "Patched Plasma Camera sources")
+add_executable(photo-processing main.cpp "${PLASMA_CAMERA_SOURCE_DIR}/src/photoprocessing.cpp")
+target_include_directories(photo-processing PRIVATE "${PLASMA_CAMERA_SOURCE_DIR}/src")
+target_link_libraries(photo-processing PRIVATE Qt6::Core Qt6::Gui Threads::Threads)

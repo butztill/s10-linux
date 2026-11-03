@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+diff -ruN a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+--- a/src/libcamera/pipeline/simple/simple.cpp	2026-10-21 00:13:34.526051089 +0200
++++ b/src/libcamera/pipeline/simple/simple.cpp	2026-10-21 00:13:34.605151551 +0200
+@@ -206,6 +206,7 @@
+ 	void create(Request *request, bool metadataRequested);
+ 	void destroy(uint32_t frame);
+ 	void clear();
++	std::vector<Request *> requests() const;
+ 
+ 	SimpleFrameInfo *find(uint32_t frame);
+ 
+@@ -230,6 +231,15 @@
+ 	frameInfo_.clear();
+ }
+ 
++std::vector<Request *> SimpleFrames::requests() const
++{
++	std::vector<Request *> requests;
++
++	for (const auto &[frame, info] : frameInfo_)
++		requests.push_back(info.request);
++	return requests;
++}
++
+ SimpleFrameInfo *SimpleFrames::find(uint32_t frame)
+ {
+ 	auto info = frameInfo_.find(frame);
+@@ -292,7 +302,7 @@
+ 			 V4L2Subdevice::Whence whence,
+ 			 Transform transform = Transform::Identity);
+ 	void imageBufferReady(FrameBuffer *buffer);
+-	void clearIncompleteRequests();
++	std::set<Request *> clearIncompleteRequests();
+ 
+ 	unsigned int streamIndex(const Stream *stream) const
+ 	{
+@@ -976,12 +986,17 @@
+ 	tryCompleteRequest(request);
+ }
+ 
+-void SimpleCameraData::clearIncompleteRequests()
++std::set<Request *> SimpleCameraData::clearIncompleteRequests()
+ {
++	std::set<Request *> cancelled;
++
+ 	while (!conversionQueue_.empty()) {
++		cancelled.insert(conversionQueue_.front().request);
+ 		pipe()->cancelRequest(conversionQueue_.front().request);
+ 		conversionQueue_.pop();
+ 	}
++
++	return cancelled;
+ }
+ 
+ void SimpleCameraData::tryCompleteRequest(Request *request)
+@@ -1728,8 +1743,19 @@
+ 
+ 	video->bufferReady.disconnect(data, &SimpleCameraData::imageBufferReady);
+ 
++	/*
++	 * Requests whose buffers are complete but that still wait for the IPA
++	 * metadata would otherwise stay queued forever, and trip the assertion
++	 * in PipelineHandler::stop(). Cancel them, except for the ones
++	 * clearIncompleteRequests() cancels.
++	 */
++	std::vector<Request *> unfinished = data->frameInfo_.requests();
+ 	data->frameInfo_.clear();
+-	data->clearIncompleteRequests();
++	std::set<Request *> cancelled = data->clearIncompleteRequests();
++	for (Request *request : unfinished) {
++		if (!cancelled.count(request))
++			cancelRequest(request);
++	}
+ 	data->conversionBuffers_.clear();
+ 
+ 	releasePipeline(data);

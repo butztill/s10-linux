@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_gem.c
++++ b/drivers/gpu/drm/panfrost/panfrost_gem.c
+@@ -473,6 +473,11 @@
+ 	return true;
+ }
+ 
++/* S10 diagnostic: constrain newly allocated BO pages, not imported buffers. */
++static bool panfrost_dma32;
++module_param_named(dma32, panfrost_dma32, bool, 0644);
++MODULE_PARM_DESC(dma32, "Use DMA32 pages for new BOs (diagnostic)");
++
+ struct panfrost_gem_object *
+ panfrost_gem_create(struct drm_device *dev, size_t size, u32 flags)
+ {
+@@ -492,6 +497,14 @@
+ 	shmem = drm_gem_shmem_create(dev, size);
+ 	if (IS_ERR(shmem))
+ 		return ERR_CAST(shmem);
++
++	if (panfrost_dma32) {
++		struct address_space *mapping = shmem->base.filp->f_mapping;
++
++		mapping_set_gfp_mask(mapping,
++			(mapping_gfp_mask(mapping) & ~(__GFP_HIGHMEM | __GFP_MOVABLE)) |
++			__GFP_DMA32);
++	}
+ 
+ 	bo = to_panfrost_bo(&shmem->base);
+ 	bo->noexec = !!(flags & PANFROST_BO_NOEXEC);

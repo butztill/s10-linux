@@ -1,0 +1,255 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later AND CC0-1.0
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -5,7 +5,9 @@
+  * Simple Software Image Processing Algorithm module
+  */
+ 
++#include <algorithm>
+ #include <chrono>
++#include <cmath>
+ #include <stdint.h>
+ #include <sys/mman.h>
+ 
+@@ -135,6 +137,36 @@
+ 	if (ret)
+ 		return ret;
+ 
++	/* Controls are exported before configure() is called. Publish the AGC
++	 * controls here from the sensor limits so clients can discover and use
++	 * ISO and exposure time from the first camera acquisition. */
++	auto exposureIt = sensorControls.find(V4L2_CID_EXPOSURE);
++	auto gainIt = sensorControls.find(V4L2_CID_ANALOGUE_GAIN);
++	if (exposureIt != sensorControls.end() && gainIt != sensorControls.end() &&
++	    sensorInfo.pixelRate && sensorInfo.minLineLength) {
++		const double lineUs = sensorInfo.minLineLength * 1.0e6 / sensorInfo.pixelRate;
++		const ControlInfo &exposureInfo = exposureIt->second;
++		const int32_t minLines = std::max(1, exposureInfo.min().get<int32_t>());
++		const int32_t maxLines = std::max(minLines, exposureInfo.max().get<int32_t>());
++		const int32_t minExposureUs = std::max(1, static_cast<int32_t>(std::lround(minLines * lineUs)));
++		const int32_t maxExposureUs = std::max(minExposureUs, static_cast<int32_t>(std::lround(maxLines * lineUs)));
++		const int32_t defaultExposureUs = std::clamp(20000, minExposureUs, maxExposureUs);
++		const ControlInfo &gainInfo = gainIt->second;
++		const auto gainValue = [this](int32_t value) {
++			return camHelper_ ? camHelper_->gain(value) : static_cast<double>(value);
++		};
++		const float gainMin = gainValue(gainInfo.min().get<int32_t>());
++		const float gainMax = std::max(gainMin, static_cast<float>(gainValue(gainInfo.max().get<int32_t>())));
++		const float gainDefault = std::clamp(static_cast<float>(gainValue(gainInfo.def().get<int32_t>())), gainMin, gainMax);
++
++		context_.ctrlMap[&controls::AeEnable] = ControlInfo(false, true, true);
++		context_.ctrlMap[&controls::ExposureValue] = ControlInfo(-2.0f, 2.0f, 0.0f);
++		context_.ctrlMap[&controls::ExposureTimeMode] = ControlInfo(0, 1, 0);
++		context_.ctrlMap[&controls::ExposureTime] = ControlInfo(minExposureUs, maxExposureUs, defaultExposureUs);
++		context_.ctrlMap[&controls::AnalogueGainMode] = ControlInfo(0, 1, 0);
++		context_.ctrlMap[&controls::AnalogueGain] = ControlInfo(gainMin, gainMax, gainDefault);
++	}
++
+ 	*ccmEnabled = context_.ccmEnabled;
+ 
+ 	params_ = nullptr;
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -71,23 +71,6 @@
+ 	if (lineUs <= 0.0)
+ 		return -EINVAL;
+ 
+-	const int32_t minExposureUs = std::max(1, static_cast<int32_t>(std::lround(
+-		context.configuration.agc.exposureMin * lineUs)));
+-	const int32_t maxExposureUs = std::max(minExposureUs, static_cast<int32_t>(std::lround(
+-		context.configuration.agc.exposureMax * lineUs)));
+-	const int32_t defaultExposureUs = std::clamp(20000, minExposureUs, maxExposureUs);
+-
+-	context.ctrlMap[&controls::AeEnable] = ControlInfo(false, true, true);
+-	context.ctrlMap[&controls::ExposureValue] = ControlInfo(-2.0f, 2.0f, 0.0f);
+-	context.ctrlMap[&controls::ExposureTimeMode] = ControlInfo(0, 1, 0);
+-	context.ctrlMap[&controls::ExposureTime] = ControlInfo(minExposureUs, maxExposureUs,
+-									 defaultExposureUs);
+-	context.ctrlMap[&controls::AnalogueGainMode] = ControlInfo(0, 1, 0);
+-	context.ctrlMap[&controls::AnalogueGain] = ControlInfo(
+-		static_cast<float>(context.configuration.agc.againMin),
+-		static_cast<float>(context.configuration.agc.againMax),
+-		static_cast<float>(context.configuration.agc.again10));
+-
+ 	context.activeState.agc.exposureAuto = true;
+ 	context.activeState.agc.gainAuto = true;
+ 	context.activeState.agc.exposureValue = 0.0f;
+--- a/src/ipa/simple/data/uncalibrated.yaml
++++ b/src/ipa/simple/data/uncalibrated.yaml
+@@ -5,15 +5,14 @@
+ algorithms:
+   - BlackLevel:
+   - Awb:
+-  # Color correction matrices can be defined here. The CCM algorithm
+-  # has a significant performance impact, and should only be enabled
+-  # if tuned.
+-  # - Ccm:
+-  #     ccms:
+-  #       - ct: 6500
+-  #         ccm: [ 1, 0, 0,
+-  #                0, 1, 0,
+-  #                0, 0, 1]
++  # An identity CCM keeps the default colors unchanged while enabling the
++  # software ISP matrix path used by the saturation control.
++  - Ccm:
++      ccms:
++        - ct: 6500
++          ccm: [ 1, 0, 0,
++                 0, 1, 0,
++                 0, 0, 1]
+   - Adjust:
+   - Agc:
+ ...
+--- a/src/libcamera/control_ids_core.yaml
++++ b/src/libcamera/control_ids_core.yaml
+@@ -1067,6 +1067,14 @@
+         from LensPosition, whose standardized dioptre units require optical
+         calibration.
+ 
++  - S10FocusPoint:
++      type: Point
++      direction: inout
++      description: |
++        Samsung Galaxy S10-specific normalized autofocus measurement point,
++        with each coordinate in the inclusive range 0 to 1000. Available only
++        for the S10 simple pipeline when a verified AK7374 lens is present.
++
+   - AfState:
+       type: int32_t
+       direction: out
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -380,6 +380,7 @@
+ 	SimpleFrames frameInfo_;
+ 	bool autofocusAvailable_ = false;
+ 	unsigned int afWidth_ = 0, afHeight_ = 0, afStride_ = 0;
++	int afFocusX_ = 500, afFocusY_ = 500;
+ 	S10Autofocus autofocus_;
+ 	std::map<FrameBuffer *, std::unique_ptr<MappedFrameBuffer>> afMappings_;
+ 	void startAutofocus(const ControlList *controls);
+@@ -705,6 +706,7 @@
+ 			ctrls[&controls::S10FocusPosition] = ControlInfo(
+ 				range.min().get<int32_t>(), range.max().get<int32_t>(),
+ 				range.def().get<int32_t>());
++			ctrls[&controls::S10FocusPoint] = ControlInfo(Point(0, 0), Point(1000, 1000), Point(500, 500));
+ 			controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
+ 			LOG(SimplePipeline, Info) << "S10 " << sensor_->model() << " contrast autofocus available";
+ 		}
+@@ -931,6 +933,10 @@
+ 
+ void SimpleCameraData::autofocusControls(const ControlList &ctrls)
+ {
++	if (auto point = ctrls.get(controls::S10FocusPoint)) {
++		afFocusX_ = std::clamp(point->x, 0, 1000);
++		afFocusY_ = std::clamp(point->y, 0, 1000);
++	}
+ 	if (auto mode = ctrls.get(controls::AfMode); mode && *mode >= 0 && *mode <= 2)
+ 		autofocus_.setMode(static_cast<S10Autofocus::Mode>(*mode), autofocusTime());
+ 	if (auto trigger = ctrls.get(controls::AfTrigger))
+@@ -978,7 +984,7 @@
+ 			const auto &plane = mapped->planes()[0];
+ 			size_t length = std::min<size_t>(plane.size(), buffer->metadata().planes()[0].bytesused);
+ 			measure = S10Autofocus::measure(plane.data(), length,
+-						      afWidth_, afHeight_, afStride_);
++							      afWidth_, afHeight_, afStride_, afFocusX_, afFocusY_);
+ 		}
+ 		autofocus_.update(measure, autofocusTime(), [this](int position) {
+ 			int ret = sensor_->focusLens()->setFocusPosition(position);
+@@ -1704,8 +1710,7 @@
+ 
+ 	data->afMappings_.clear();
+ 	data->afWidth_ = 0;
+-	if (data->autofocusAvailable_ && (videoFormat.toPixelFormat() == formats::SGRBG10 ||
+-					  videoFormat.toPixelFormat() == formats::SGBRG10)) {
++	if (data->autofocusAvailable_ && videoFormat.toPixelFormat() == formats::SGRBG10) {
+ 		data->afWidth_ = captureFormat.size.width;
+ 		data->afHeight_ = captureFormat.size.height;
+ 		data->afStride_ = captureFormat.planes[0].bpl;
+--- a/src/libcamera/pipeline/simple/s10_autofocus.h
++++ b/src/libcamera/pipeline/simple/s10_autofocus.h
+@@ -22,12 +22,12 @@
+ 	struct Measure { double contrast = 0; double mean = 0; bool valid = false; };
+ 	using Move = std::function<int(int)>;
+ 
+-	/* GRBG10 or GBRG10 (green at even x, even y) unpacked in little-endian
+-	 * 16-bit words. Sample only one green
++	/* GRBG10 unpacked in little-endian 16-bit words. Sample only one green
+ 	 * phase in a central ROI, excluding black/saturated scenes. Normalizing
+ 	 * by mean signal squared reduces sensitivity to exposure changes. */
+ 	static Measure measure(const uint8_t *data, size_t length,
+-			       unsigned int width, unsigned int height, unsigned int stride)
++			       unsigned int width, unsigned int height, unsigned int stride,
++			       unsigned int focusX = 500, unsigned int focusY = 500)
+ 	{
+ 		if (!data || width < 32 || height < 32 || stride < width * 2 ||
+ 		    length < size_t(height - 1) * stride + width * 2)
+@@ -37,8 +37,14 @@
+ 			return int(p[0] | (p[1] << 8));
+ 		};
+ 		unsigned int roi = std::min({ 512U, width / 2, height / 2 }) & ~1U;
+-		unsigned int x0 = ((width - roi) / 2) & ~1U;
+-		unsigned int y0 = ((height - roi) / 2) & ~1U;
++		unsigned int centerX = static_cast<uint64_t>(width - 1) * std::min(focusX, 1000U) / 1000;
++		unsigned int centerY = static_cast<uint64_t>(height - 1) * std::min(focusY, 1000U) / 1000;
++		unsigned int x0 = static_cast<unsigned int>(std::clamp<int>(
++			static_cast<int>(centerX) - static_cast<int>(roi / 2), 2,
++			static_cast<int>(width - roi - 2))) & ~1U;
++		unsigned int y0 = static_cast<unsigned int>(std::clamp<int>(
++			static_cast<int>(centerY) - static_cast<int>(roi / 2), 2,
++			static_cast<int>(height - roi - 2))) & ~1U;
+ 		double energy = 0, signal = 0;
+ 		unsigned int count = 0, saturated = 0;
+ 		for (unsigned int y = y0; y < y0 + roi; y += 4) {
+@@ -148,16 +154,17 @@
+ 		}
+ 		invalid_ = 0;
+ 		samples_.push_back(m.contrast);
+-		if (samples_.size() < 3)
++		if (samples_.size() < 2)
+ 			return;
+ 		std::sort(samples_.begin(), samples_.end());
+-		double score = samples_[1];
++		double score = (samples_[0] + samples_[1]) / 2.0;
+ 		samples_.clear();
+ 		if (phase_ == Warmup) {
+ 			points_.clear();
+-			for (int p = 0; p < 511; p += 64)
++			for (int p = 0; p <= 511; p += 128)
+ 				points_.push_back(p);
+-			points_.push_back(511);
++			if (points_.back() != 511)
++				points_.push_back(511);
+ 			phase_ = Coarse;
+ 			index_ = 0;
+ 			advance(points_[0], now, move);
+@@ -185,8 +192,8 @@
+ 		bestScore_ = best->second;
+ 		if (phase_ == Coarse) {
+ 			points_.clear();
+-			for (int p = std::max(0, bestPosition_ - 48);
+-			     p <= std::min(511, bestPosition_ + 48); p += 16) {
++			for (int offset : { -64, -32, -16, 16, 32, 64 }) {
++				int p = std::clamp(bestPosition_ + offset, 0, 511);
+ 				if (!scores_.count(p))
+ 					points_.push_back(p);
+ 			}
+@@ -216,7 +223,7 @@
+ 		phase_ = Warmup;
+ 		origin_ = position_;
+ 		deadline_ = now + kTimeout;
+-		skip_ = 12; /* Allow AGC to settle before comparing lens positions. */
++		skip_ = 4; /* Allow the exposure to settle before the first lens sample. */
+ 		invalid_ = changed_ = 0;
+ 		points_.clear();
+ 		samples_.clear();
+@@ -229,7 +236,7 @@
+ 			return;
+ 		}
+ 		position_ = position;
+-		skip_ = 4; /* Discard captured/in-flight frames and motor settling. */
++		skip_ = 1; /* Discard an in-flight frame and let the actuator settle. */
+ 		samples_.clear();
+ 	}
+ 	void finish(bool success, uint64_t now, const Move &move)

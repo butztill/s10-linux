@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: GPL-2.0-only
+version = 1
+# Verification levels describe host checks, not hardware or distribution approval.
+
+[[component]]
+id = "linux"
+upstream = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+revision = "8cdeaa50eae8dad34885515f62559ee83e7e8dda"
+archive = "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/snapshot/linux-7.2-rc2.tar.gz"
+uncompressed_tar_sha256 = "2fd05c84450e572f66479fd737c309c480dc3684d2ab7c475791240087f7103b"
+verification = "Fresh source extraction, overlay/config, Image and production DTB built with Clang/LLD 23.1.4."
+
+[[component]]
+id = "libcamera"
+upstream = "https://github.com/libcamera-org/libcamera"
+revision = "191e202178f02430b5942397c70d215cdd2056fa"
+archive = "https://codeload.github.com/libcamera-org/libcamera/tar.gz/191e202178f02430b5942397c70d215cdd2056fa"
+archive_sha256 = "cb26396dfc8c5359ccdff8670ad6972a663f46d029f6aba0feb543039059dde7"
+series = "release/libcamera.series"
+verification = "Public series applies without fuzz; native host build completed. No proprietary-reference color inputs."
+
+[[component]]
+id = "plasma-camera"
+upstream = "https://invent.kde.org/plasma-mobile/plasma-camera.git"
+revision = "29d46b59e2159f90b0eeb9bca94906e667cfaecf"
+patch = "patches/plasma-camera/0100-s10-camera-public.patch"
+verification = "Consolidated patch applies without fuzz and reproduces 16 current working source files byte-for-byte; photo-processing host checks passed. Full application/device qualification remains separate."
+
+[[component]]
+id = "megapixels"
+upstream = "https://gitlab.com/megapixels-org/Megapixels.git"
+revision = "578b1474e1c58829874c1a2c06844d34c9c82c56"
+patch = "patches/megapixels-unpacked-raw10.patch"
+verification = "Patch applies without fuzz to a fresh archive of this revision; no complete application build claimed."
+
+[[component]]
+id = "libmegapixels"
+upstream = "https://gitlab.com/megapixels-org/libmegapixels.git"
+revision = "1f86f248a835bd1cf92752a1a7cac471d65a403e"
+verification = "Reference revision recorded from the existing source checkout; build not requalified."
+
+[[component]]
+id = "u-boot-reference"
+upstream = "https://github.com/chiffathefox/u-boot"
+revision = "dec4927b4ad5b789b0854050096fc80250627de7"
+verification = "Fresh compilation of exact device-tree sources compared with the original captured baseline. No bootloader image built or installed."
+
+[[component]]
+id = "clatd"
+upstream = "https://github.com/toreanderson/clatd"
+revision = "5e085f1b1730cb4133623d5738fd447199baf58e"
+verification = "Both MIT-licensed local copies compared; retained upstream notice and one pre-existing diagnostic change."
+
+[[component]]
+id = "swu-ikev2"
+upstream = "https://github.com/fasferraz/SWu-IKEv2"
+revision = "bf5d258b7298db65e64b43065b153325eba47a9e"
+patch = "patches/vowifi/s10-swu-integration.patch"
+verification = "Complete modified Python source reproduced from pinned upstream; LICENSE byte-identical."
+
+[[component]]
+id = "phoc"
+archive = "https://sources.phosh.mobi/releases/phoc/phoc-0.57.0.tar.xz"
+archive_sha256 = "1f5688e1136b971f6d86cfb49a2fb3f8fbe13bae0f6099258d3a007a2707ee56"
+patch = "patches/phoc-s10-argb-scanout.patch"
+verification = "Public archive downloaded and hash-matched; S10 patch applies without fuzz. Full compositor build/device qualification is separate."
+
+[[component]]
+id = "wlroots"
+upstream = "https://gitlab.freedesktop.org/wlroots/wlroots"
+version = "0.20.2"
+archive = "https://gitlab.freedesktop.org/wlroots/wlroots/-/archive/0.20.2/wlroots-0.20.2.tar.gz"
+archive_sha256 = "972c7ac44b17828f4702bfae7cd8347346a3fb5b2c1076cfa2c3fcedac5ec343"
+verification = "Public archive pinned by hash; both S10 patches apply without fuzz. Full compositor build/device qualification is separate."
+
+[[component]]
+id = "modemmanager"
+upstream = "https://github.com/linux-mobile-broadband/ModemManager"
+version = "1.25.95_git20261005"
+revision = "7f0bf17ab518cd78925cf7e53cc0d5c42f88b41a"
+archive = "https://gitlab.freedesktop.org/mobile-broadband/ModemManager/-/archive/7f0bf17ab518cd78925cf7e53cc0d5c42f88b41a/ModemManager-7f0bf17ab518cd78925cf7e53cc0d5c42f88b41a.tar.gz"
+archive_sha256 = "018b1d62ca4e2a05a903b706bd63e34663622594caf5384490c4900503aefc8c"
+archive_sha512 = "e049eecc104c989f516402ca7c21e3374c152e3840cf05c34ac91bc8e3305c83b53693bc0964f657664d4156baaac1a4e0fa35dd577733623dd669b67f1675f6"
+verification = "Exact Alpine package source commit identified; downloaded archive matches the recipe SHA-512. Old development snapshot has 12 differences and is not the release input. Native ModemManager and S10 plugin build passed; ARM64 kernel boot/TTY modules also built. No device loading or ABI deployment claimed."

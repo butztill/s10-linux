@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/i2c/busses/i2c-exynos5.c
++++ b/drivers/i2c/busses/i2c-exynos5.c
+@@ -246,7 +246,17 @@
+ 	.hw		= I2C_TYPE_EXYNOS8895,
+ };
+ 
++/* Exynos9820 retains the autov9 timing layout, with a 16-byte FIFO. */
++static const struct exynos_hsi2c_variant exynos9820_hsi2c_data = {
++	.fifo_depth = 16,
++	.hw = I2C_TYPE_EXYNOSAUTOV9,
++};
++
+ static const struct of_device_id exynos5_i2c_match[] = {
++	{
++		.compatible = "samsung,exynos9820-hsi2c",
++		.data = &exynos9820_hsi2c_data,
++	},
+ 	{
+ 		.compatible = "samsung,exynos5-hsi2c",
+ 		.data = &exynos5250_hsi2c_data

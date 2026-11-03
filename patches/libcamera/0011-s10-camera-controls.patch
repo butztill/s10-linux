@@ -1,0 +1,269 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/libcamera/control_ids_core.yaml
++++ b/src/libcamera/control_ids_core.yaml
+@@ -1057,6 +1057,16 @@
+         \todo Define a property to report the Hyperfocal distance of calibrated
+         lenses.
+ 
++  - S10FocusPosition:
++      type: int32_t
++      direction: inout
++      description: |
++        Samsung Galaxy S10-specific raw VCM motor position, in the actuator's
++        driver units. This control is available only when the S10 simple
++        pipeline has verified an AK7374 lens. It is intentionally separate
++        from LensPosition, whose standardized dioptre units require optical
++        calibration.
++
+   - AfState:
+       type: int32_t
+       direction: out
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -702,6 +702,9 @@
+ 			ctrls[&controls::AfPause] = ControlInfo(0, 2);
+ 			ctrls[&controls::AfState] = ControlInfo(0, 3);
+ 			ctrls[&controls::AfPauseState] = ControlInfo(0, 2);
++			ctrls[&controls::S10FocusPosition] = ControlInfo(
++				range.min().get<int32_t>(), range.max().get<int32_t>(),
++				range.def().get<int32_t>());
+ 			controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
+ 			LOG(SimplePipeline, Info) << "S10 " << sensor_->model() << " contrast autofocus available";
+ 		}
+@@ -934,6 +937,13 @@
+ 		autofocus_.trigger(*trigger == controls::AfTriggerCancel, autofocusTime());
+ 	if (auto pause = ctrls.get(controls::AfPause); pause && *pause >= 0 && *pause <= 2)
+ 		autofocus_.pause(*pause, autofocusTime());
++	if (auto position = ctrls.get(controls::S10FocusPosition)) {
++		autofocus_.setMode(S10Autofocus::Manual, autofocusTime());
++		int ret = autofocus_.moveTo(*position, [this](int motorPosition) {
++			return sensor_->focusLens()->setFocusPosition(motorPosition);
++		});
++		LOG(SimplePipeline, Debug) << "S10 manual focus " << *position << " result " << ret;
++	}
+ }
+ 
+ void SimpleCameraData::startAutofocus(const ControlList *ctrls)
+--- a/src/libcamera/pipeline/simple/s10_autofocus.h
++++ b/src/libcamera/pipeline/simple/s10_autofocus.h
+@@ -76,6 +76,17 @@
+ 			begin(now);
+ 	}
+ 
++	int moveTo(int position, const Move &move)
++	{
++		position = std::clamp(position, 0, 511);
++		if (position == position_)
++			return 0;
++		int ret = move(position);
++		if (!ret)
++			position_ = position;
++		return ret;
++	}
++
+ 	void trigger(bool cancel, uint64_t now)
+ 	{
+ 		if (mode_ != Auto)
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -65,12 +65,78 @@
+ {
+ }
+ 
++int Agc::configure(IPAContext &context, [[maybe_unused]] const IPAConfigInfo &configInfo)
++{
++	const double lineUs = context.configuration.agc.lineDuration.get<std::micro>();
++	if (lineUs <= 0.0)
++		return -EINVAL;
++
++	const int32_t minExposureUs = std::max(1, static_cast<int32_t>(std::lround(
++		context.configuration.agc.exposureMin * lineUs)));
++	const int32_t maxExposureUs = std::max(minExposureUs, static_cast<int32_t>(std::lround(
++		context.configuration.agc.exposureMax * lineUs)));
++	const int32_t defaultExposureUs = std::clamp(20000, minExposureUs, maxExposureUs);
++
++	context.ctrlMap[&controls::AeEnable] = ControlInfo(false, true, true);
++	context.ctrlMap[&controls::ExposureValue] = ControlInfo(-2.0f, 2.0f, 0.0f);
++	context.ctrlMap[&controls::ExposureTimeMode] = ControlInfo(0, 1, 0);
++	context.ctrlMap[&controls::ExposureTime] = ControlInfo(minExposureUs, maxExposureUs,
++									 defaultExposureUs);
++	context.ctrlMap[&controls::AnalogueGainMode] = ControlInfo(0, 1, 0);
++	context.ctrlMap[&controls::AnalogueGain] = ControlInfo(
++		static_cast<float>(context.configuration.agc.againMin),
++		static_cast<float>(context.configuration.agc.againMax),
++		static_cast<float>(context.configuration.agc.again10));
++
++	context.activeState.agc.exposureAuto = true;
++	context.activeState.agc.gainAuto = true;
++	context.activeState.agc.exposureValue = 0.0f;
++	return 0;
++}
++
++void Agc::queueRequest(typename Module::Context &context,
++		       [[maybe_unused]] const uint32_t frame,
++		       [[maybe_unused]] typename Module::FrameContext &frameContext,
++		       const ControlList &controls)
++{
++	auto &agc = context.activeState.agc;
++	if (auto enable = controls.get(controls::AeEnable)) {
++		agc.exposureAuto = *enable;
++		agc.gainAuto = *enable;
++	}
++	if (auto mode = controls.get(controls::ExposureTimeMode))
++		agc.exposureAuto = *mode == controls::ExposureTimeModeAuto;
++	if (auto mode = controls.get(controls::AnalogueGainMode))
++		agc.gainAuto = *mode == controls::AnalogueGainModeAuto;
++	if (auto value = controls.get(controls::ExposureValue))
++		agc.exposureValue = *value;
++	if (auto value = controls.get(controls::ExposureTime)) {
++		const double lineUs = context.configuration.agc.lineDuration.get<std::micro>();
++		if (lineUs > 0.0)
++			agc.exposure = std::clamp(static_cast<int32_t>(std::lround(*value / lineUs)),
++					  context.configuration.agc.exposureMin,
++					  context.configuration.agc.exposureMax);
++	}
++	if (auto value = controls.get(controls::AnalogueGain))
++		agc.again = std::clamp<double>(*value,
++					       context.configuration.agc.againMin,
++					       context.configuration.agc.againMax);
++}
++
+ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
+ {
+ 	int32_t &exposure = frameContext.sensor.exposure;
+ 	double &again = frameContext.sensor.gain;
+ 
+-	double error = kExposureOptimal - exposureMSV;
++	const bool exposureAuto = context.activeState.agc.exposureAuto;
++	const bool gainAuto = context.activeState.agc.gainAuto;
++	if (!exposureAuto && !gainAuto)
++		return;
++
++	const double target = std::clamp(static_cast<double>(kExposureOptimal) *
++					  std::exp2(static_cast<double>(context.activeState.agc.exposureValue)),
++					  0.5, static_cast<double>(kExposureBinsCount) - 0.5);
++	double error = target - exposureMSV;
+ 
+ 	if (std::abs(error) <= kExposureSatisfactory)
+ 		return;
+@@ -86,10 +152,10 @@
+ 
+ 	if (factor > 1.0f) {
+ 		/* Scene too dark: increase exposure first, then gain. */
+-		if (exposure < context.configuration.agc.exposureMax) {
++		if (exposureAuto && exposure < context.configuration.agc.exposureMax) {
+ 			int32_t next = static_cast<int32_t>(exposure * factor);
+ 			exposure = std::max(next, exposure + 1);
+-		} else {
++		} else if (gainAuto) {
+ 			double next = again * factor;
+ 			if (next - again < context.configuration.agc.againMinStep)
+ 				again += context.configuration.agc.againMinStep;
+@@ -98,13 +164,13 @@
+ 		}
+ 	} else {
+ 		/* Scene too bright: decrease gain first, then exposure. */
+-		if (again > context.configuration.agc.again10) {
++		if (gainAuto && again > context.configuration.agc.again10) {
+ 			double next = again * factor;
+ 			if (again - next < context.configuration.agc.againMinStep)
+ 				again -= context.configuration.agc.againMinStep;
+ 			else
+ 				again = next;
+-		} else {
++		} else if (exposureAuto) {
+ 			int32_t next = static_cast<int32_t>(exposure * factor);
+ 			exposure = std::min(next, exposure - 1);
+ 		}
+@@ -130,20 +196,33 @@
+ 		  const SwIspStats *stats,
+ 		  ControlList &metadata)
+ {
+-	utils::Duration exposureTime =
+-		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
+-	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
+-	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
+-
+ 	if (!context.activeState.agc.valid) {
+ 		/*
+ 		 * Init active-state from sensor values in case updateExposure()
+ 		 * does not run for the first frame.
+ 		 */
+-		context.activeState.agc.exposure = frameContext.sensor.exposure;
+-		context.activeState.agc.again = frameContext.sensor.gain;
++		if (context.activeState.agc.exposureAuto)
++			context.activeState.agc.exposure = frameContext.sensor.exposure;
++		if (context.activeState.agc.gainAuto)
++			context.activeState.agc.again = frameContext.sensor.gain;
+ 		context.activeState.agc.valid = true;
+ 	}
++	if (!context.activeState.agc.exposureAuto)
++		frameContext.sensor.exposure = context.activeState.agc.exposure;
++	if (!context.activeState.agc.gainAuto)
++		frameContext.sensor.gain = context.activeState.agc.again;
++
++	utils::Duration exposureTime =
++		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
++	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
++	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
++	metadata.set(controls::ExposureTimeMode, context.activeState.agc.exposureAuto ?
++		     controls::ExposureTimeModeAuto : controls::ExposureTimeModeManual);
++	metadata.set(controls::AnalogueGainMode, context.activeState.agc.gainAuto ?
++		     controls::AnalogueGainModeAuto : controls::AnalogueGainModeManual);
++	metadata.set(controls::AeEnable,
++		     context.activeState.agc.exposureAuto || context.activeState.agc.gainAuto);
++	metadata.set(controls::ExposureValue, context.activeState.agc.exposureValue);
+ 
+ 	if (!stats->valid) {
+ 		/*
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -19,6 +19,11 @@
+ 	Agc();
+ 	~Agc() = default;
+ 
++	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void queueRequest(typename Module::Context &context, const uint32_t frame,
++			  typename Module::FrameContext &frameContext,
++			  const ControlList &controls) override;
++
+ 	void process(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+ 		     const SwIspStats *stats,
+--- a/src/ipa/simple/algorithms/adjust.cpp
++++ b/src/ipa/simple/algorithms/adjust.cpp
+@@ -30,9 +30,8 @@
+ 		ControlInfo(0.1f, 10.0f, kDefaultGamma);
+ 	context.ctrlMap[&controls::Contrast] =
+ 		ControlInfo(0.0f, 2.0f, kDefaultContrast);
+-	if (context.ccmEnabled)
+-		context.ctrlMap[&controls::Saturation] =
+-			ControlInfo(0.0f, 2.0f, kDefaultSaturation);
++	context.ctrlMap[&controls::Saturation] =
++		ControlInfo(0.0f, 2.0f, kDefaultSaturation);
+ 	return 0;
+ }
+ 
+@@ -101,7 +100,7 @@
+ 	frameContext.contrast = context.activeState.knobs.contrast;
+ 
+ 	auto &saturation = context.activeState.knobs.saturation;
+-	if (context.ccmEnabled && saturation) {
++	if (saturation) {
+ 		applySaturation(context.activeState.combinedMatrix, saturation.value());
+ 		frameContext.saturation = saturation;
+ 	}
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -40,6 +40,9 @@
+ 		int32_t exposure;
+ 		double again;
+ 		bool valid;
++		bool exposureAuto = true;
++		bool gainAuto = true;
++		float exposureValue = 0.0f;
+ 	} agc;
+ 
+ 	struct {

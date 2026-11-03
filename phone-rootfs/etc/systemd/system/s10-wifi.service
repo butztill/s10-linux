@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Galaxy S10 experimental PCIe WLAN
+ConditionKernelCommandLine=s10.wifi=1
+After=systemd-modules-load.service
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/modprobe s10-exynos9820-pcie
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

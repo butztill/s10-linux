@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=S10 GNSS (BCM4755 via Samsung reference chain) -> NMEA socket for geoclue
+Conflicts=s10-sensord.service
+After=s10-sensord.service
+
+[Service]
+Type=simple
+# Started by s10-gnss.socket when geoclue connects; exits 60 s after the last client left.
+Environment=IDLE_EXIT=60
+ExecStart=/bin/sh /usr/local/lib/s10-gnss/run-stack.sh
+ExecStopPost=/bin/sh -c 'systemctl --no-block start s10-sensord.service'
+# gnss_daemon exits non-zero when the chain delivers no NMEA (start race) or gpsd dies.
+Restart=on-failure
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=40

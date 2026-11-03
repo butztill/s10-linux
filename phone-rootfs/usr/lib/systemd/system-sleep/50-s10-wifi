@@ -1,0 +1,69 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Local S10 quirk: BCM4375 firmware D3 is not reliable on this port yet.
+# Detach this endpoint (and by default the PCIe host) before system sleep; re-probe after resume.
+# No NetworkManager/user-session IPC: systemd freezes user.slice around hooks.
+set -eu
+test "$(id -u)" = 0
+tr '\000' '\n' </sys/firmware/devicetree/base/compatible | grep -qx samsung,beyond1lte || exit 0
+test "${2:-}" = suspend || exit 0
+endpoint=0000:01:00.0
+pci=/sys/bus/pci/devices/$endpoint
+driver=/sys/bus/pci/drivers/brcmfmac
+state=/run/s10-sleep-wifi
+host=13ed0000.pcie
+hostdrv=/sys/bus/platform/drivers/s10-pcie0-test
+umask 077
+mkdir -p "$state"
+if ! test -f "$state/hostrebind"; then
+    test -d "$pci" || exit 0
+    test "$(cat "$pci/vendor")" = 0x14e4
+    test "$(cat "$pci/device")" = 0x4475
+fi
+snapshot() {
+    cat /sys/class/power_supply/max170xx_battery/uevent > "$state/battery-$1" || true
+    read -r uptime rest </proc/uptime
+    printf '%s\n' "$uptime" > "$state/uptime-$1"
+    # Retain counter evidence for every cycle even if the user sleeps again.
+    qh=$(cat /sys/class/power_supply/max170xx_battery/charge_counter)
+    printf '<6>S10_SLEEP_BATTERY %s uptime_s=%s charge_counter_uAh=%s\n' "$1" "$uptime" "$qh" > /dev/kmsg
+}
+case "${1:-}" in
+    pre)
+        if test -L "$pci/driver"; then
+            test "$(readlink -f "$pci/driver")" = "$driver"
+            printf '%s\n' "$endpoint" > "$state/rebind"
+            printf '%s\n' "$endpoint" > "$driver/unbind"
+        fi
+        # Tear the whole PCIe host down (link, PHY, WLAN supply; ~40 mA in s2idle) and let its
+        # probe redo the bring-up on resume. Real SoC sleep (deep) needs this anyway because it
+        # powers the PCIe block off; /etc/s10-power/keep-pcie keeps the host up in s2idle.
+        if test -e "$hostdrv/$host" &&
+           { grep -q '\[deep\]' /sys/power/mem_sleep || ! test -e /etc/s10-power/keep-pcie; }; then
+            printf '%s\n' "$host" > "$hostdrv/unbind"
+            : > "$state/hostrebind"
+        fi
+        snapshot pre
+        printf '<6>S10_SLEEP_WIFI pre: endpoint detached, radio preference unchanged\n' > /dev/kmsg
+        ;;
+    post)
+        snapshot post
+        if test -f "$state/hostrebind"; then
+            printf '%s\n' "$host" > "$hostdrv/bind"
+            rm "$state/hostrebind"
+            rm -f "$state/rebind"
+            printf '<6>S10_SLEEP_WIFI post: pcie host rebound\n' > /dev/kmsg
+            exit 0
+        fi
+        if test -f "$state/rebind"; then
+            test "$(cat "$state/rebind")" = "$endpoint"
+            if ! test -L "$pci/driver"; then
+                printf '%s\n' "$endpoint" > "$driver/bind"
+            fi
+            test "$(readlink -f "$pci/driver")" = "$driver"
+            rm "$state/rebind"
+        fi
+        printf '<6>S10_SLEEP_WIFI post: endpoint restored\n' > /dev/kmsg
+        ;;
+    *) exit 2 ;;
+esac

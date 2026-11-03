@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -43,6 +43,10 @@
+ module_param(native_format_only, bool, 0444);
+ MODULE_PARM_DESC(native_format_only, "Expose only the firmware framebuffer's native pixel format");
+ 
++/* Advertise the native alpha format without removing the XRGB fallback. */
++static bool native_format_first;
++module_param(native_format_first, bool, 0444);
++MODULE_PARM_DESC(native_format_first, "Expose the native framebuffer format alongside compatibility formats");
+ 
+ /*
+  * Helpers for simplefb
+@@ -774,6 +778,16 @@
+ 		sdev->formats[0] = format->format;
+ 		nformats = 1;
+ 		drm_info(dev, "Native framebuffer format only: %p4cc\n", &format->format);
++	} else if (native_format_first && format->has_alpha) {
++		sdev->formats[0] = format->format;
++		nformats = 1;
++		/* The helper strips alpha from its input; retain that compatibility
++		 * result as well when it differs from the real native format.
++		 */
++		nformats += drm_sysfb_build_fourcc_list(dev, &format->format, 1,
++			sdev->formats + 1, ARRAY_SIZE(sdev->formats) - 1);
++		drm_info(dev, "Native framebuffer format first: %p4cc (%zu formats)\n",
++			 &format->format, nformats);
+ 	} else {
+ 		nformats = drm_sysfb_build_fourcc_list(dev, &format->format, 1,
+ 					       sdev->formats, ARRAY_SIZE(sdev->formats));

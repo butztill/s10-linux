@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_drv.c
++++ b/drivers/gpu/drm/panfrost/panfrost_drv.c
+@@ -1078,6 +1078,16 @@
+ 	.pm_domain_names = NULL,
+ };
+ 
++/* Match Samsung's AArch64 MMU mode for the Exynos9820 Mali-G76.
++ * Legacy page tables produced repeatable rendering faults on this integration.
++ */
++static const struct panfrost_compatible exynos9820_data = {
++	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
++	.supply_names = default_supplies,
++	.num_pm_domains = 1,
++	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
++};
++
+ static const struct panfrost_compatible default_pm_rt_data = {
+ 	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
+ 	.supply_names = default_supplies,
+@@ -1154,6 +1164,7 @@
+ 
+ static const struct of_device_id dt_match[] = {
+ 	/* Set first to probe before the generic compatibles */
++	{ .compatible = "samsung,exynos9820-mali", .data = &exynos9820_data },
+ 	{ .compatible = "amlogic,meson-gxm-mali",
+ 	  .data = &amlogic_data, },
+ 	{ .compatible = "amlogic,meson-g12a-mali",

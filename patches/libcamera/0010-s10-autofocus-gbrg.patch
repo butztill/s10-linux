@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+diff -ruN a/src/libcamera/pipeline/simple/s10_autofocus.h b/src/libcamera/pipeline/simple/s10_autofocus.h
+--- a/src/libcamera/pipeline/simple/s10_autofocus.h	2026-10-23 01:06:09.704240200 +0200
++++ b/src/libcamera/pipeline/simple/s10_autofocus.h	2026-10-23 01:06:09.735367251 +0200
+@@ -22,7 +22,8 @@
+ 	struct Measure { double contrast = 0; double mean = 0; bool valid = false; };
+ 	using Move = std::function<int(int)>;
+ 
+-	/* GRBG10 unpacked in little-endian 16-bit words. Sample only one green
++	/* GRBG10 or GBRG10 (green at even x, even y) unpacked in little-endian
++	 * 16-bit words. Sample only one green
+ 	 * phase in a central ROI, excluding black/saturated scenes. Normalizing
+ 	 * by mean signal squared reduces sensitivity to exposure changes. */
+ 	static Measure measure(const uint8_t *data, size_t length,
+diff -ruN a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+--- a/src/libcamera/pipeline/simple/simple.cpp	2026-10-23 01:06:09.695497252 +0200
++++ b/src/libcamera/pipeline/simple/simple.cpp	2026-10-23 01:06:09.727844998 +0200
+@@ -1694,7 +1694,8 @@
+ 
+ 	data->afMappings_.clear();
+ 	data->afWidth_ = 0;
+-	if (data->autofocusAvailable_ && videoFormat.toPixelFormat() == formats::SGRBG10) {
++	if (data->autofocusAvailable_ && (videoFormat.toPixelFormat() == formats::SGRBG10 ||
++					  videoFormat.toPixelFormat() == formats::SGBRG10)) {
+ 		data->afWidth_ = captureFormat.size.width;
+ 		data->afHeight_ = captureFormat.size.height;
+ 		data->afStride_ = captureFormat.planes[0].bpl;

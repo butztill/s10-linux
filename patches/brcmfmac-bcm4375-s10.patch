@@ -1,0 +1,133 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -53,6 +53,7 @@
+ #define BRCM_CC_43666_CHIP_ID		43666
+ #define BRCM_CC_4371_CHIP_ID		0x4371
+ #define BRCM_CC_43751_CHIP_ID		43751
++#define BRCM_CC_4375_CHIP_ID		0x4375
+ #define BRCM_CC_43752_CHIP_ID		43752
+ #define BRCM_CC_4377_CHIP_ID		0x4377
+ #define BRCM_CC_4378_CHIP_ID		0x4378
+@@ -95,6 +96,7 @@
+ #define BRCM_PCIE_4366_5G_DEVICE_ID	0x43c5
+ #define BRCM_PCIE_4371_DEVICE_ID	0x440d
+ #define BRCM_PCIE_43596_DEVICE_ID	0x4415
++#define BRCM_PCIE_4375_DEVICE_ID	0x4475
+ #define BRCM_PCIE_43752_DEVICE_ID	0x449d
+ #define BRCM_PCIE_4377_DEVICE_ID	0x4488
+ #define BRCM_PCIE_4378_DEVICE_ID	0x4425
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+@@ -739,6 +739,7 @@
+ 	case CY_CC_4373_CHIP_ID:
+ 		return 0x160000;
+ 	case BRCM_CC_43751_CHIP_ID:
++	case BRCM_CC_4375_CHIP_ID:
+ 	case BRCM_CC_43752_CHIP_ID:
+ 	case BRCM_CC_4377_CHIP_ID:
+ 		return 0x170000;
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -66,6 +66,7 @@
+ BRCMF_FW_DEF(4366B, "brcmfmac4366b-pcie");
+ BRCMF_FW_DEF(4366C, "brcmfmac4366c-pcie");
+ BRCMF_FW_DEF(4371, "brcmfmac4371-pcie");
++BRCMF_FW_CLM_DEF(4375, "brcmfmac4375-pcie");
+ BRCMF_FW_CLM_DEF(43752, "brcmfmac43752-pcie");
+ BRCMF_FW_CLM_DEF(4377B3, "brcmfmac4377b3-pcie");
+ BRCMF_FW_CLM_DEF(4378B1, "brcmfmac4378b1-pcie");
+@@ -107,6 +108,7 @@
+ 	BRCMF_FW_ENTRY(BRCM_CC_43664_CHIP_ID, 0xFFFFFFF0, 4366C),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43666_CHIP_ID, 0xFFFFFFF0, 4366C),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4371_CHIP_ID, 0xFFFFFFFF, 4371),
++	BRCMF_FW_ENTRY(BRCM_CC_4375_CHIP_ID, 0xFFFFFFFF, 4375),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43752_CHIP_ID, 0xFFFFFFFF, 43752),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4377_CHIP_ID, 0xFFFFFFFF, 4377B3), /* revision ID 4 */
+ 	BRCMF_FW_ENTRY(BRCM_CC_4378_CHIP_ID, 0x0000000F, 4378B1), /* revision ID 3 */
+@@ -974,7 +976,8 @@
+ 
+ 	brcmf_dbg(PCIE, "Enter\n");
+ 
+-	pci_enable_msi(pdev);
++	if (pdev->device != BRCM_PCIE_4375_DEVICE_ID)
++		pci_enable_msi(pdev);
+ 	if (request_threaded_irq(pdev->irq, brcmf_pcie_quick_check_isr,
+ 				 brcmf_pcie_isr_thread, IRQF_SHARED,
+ 				 "brcmf_pcie_intr", devinfo)) {
+@@ -1659,6 +1662,16 @@
+ 
+ 	addr = sharedram_addr + BRCMF_SHARED_RING_INFO_ADDR_OFFSET;
+ 	shared->ring_info_addr = brcmf_pcie_read_tcm32(devinfo, addr);
++
++	/* BCM4375 v7 firmware host capabilities, matching Samsung's message
++	 * buffer ABI and the published z3s port. Never touch other chipsets.
++	 */
++	if (devinfo->ci->chip == BRCM_CC_4375_CHIP_ID && shared->version == 7) {
++		u32 host_cap = shared->version | 0x00000400 | 0x00001000 |
++			       0x00020000 | 0x00800000;
++		brcmf_pcie_write_tcm32(devinfo, sharedram_addr + 84, host_cap);
++		dev_info(&devinfo->pdev->dev, "S10 BCM4375 host_cap=%#x\n", host_cap);
++	}
+ 
+ 	brcmf_dbg(PCIE, "max rx buf post %d, rx dataoffset %d\n",
+ 		  shared->max_rxbufpost, shared->rx_dataoffset);
+@@ -2050,6 +2063,7 @@
+ 	u16 *otp;
+ 	struct brcmf_core *core;
+ 	int ret;
++
+ 
+ 	switch (devinfo->ci->chip) {
+ 	case BRCM_CC_4355_CHIP_ID:
+@@ -2157,7 +2171,8 @@
+ 	nvram = fwreq->items[BRCMF_PCIE_FW_NVRAM].nv_data.data;
+ 	nvram_len = fwreq->items[BRCMF_PCIE_FW_NVRAM].nv_data.len;
+ 	devinfo->clm_fw = fwreq->items[BRCMF_PCIE_FW_CLM].binary;
+-	devinfo->txcap_fw = fwreq->items[BRCMF_PCIE_FW_TXCAP].binary;
++	if (fwreq->n_items > BRCMF_PCIE_FW_TXCAP)
++		devinfo->txcap_fw = fwreq->items[BRCMF_PCIE_FW_TXCAP].binary;
+ 	kfree(fwreq);
+ 
+ 	ret = brcmf_chip_get_raminfo(devinfo->ci);
+@@ -2234,6 +2249,7 @@
+ brcmf_pcie_prepare_fw_request(struct brcmf_pciedev_info *devinfo)
+ {
+ 	struct brcmf_fw_request *fwreq;
++	u32 n_items = devinfo->ci->chip == BRCM_CC_4375_CHIP_ID ? 3 : 4;
+ 	struct brcmf_fw_name fwnames[] = {
+ 		{ ".bin", devinfo->fw_name },
+ 		{ ".txt", devinfo->nvram_name },
+@@ -2244,7 +2260,7 @@
+ 	fwreq = brcmf_fw_alloc_request(devinfo->ci->chip, devinfo->ci->chiprev,
+ 				       brcmf_pcie_fwnames,
+ 				       ARRAY_SIZE(brcmf_pcie_fwnames),
+-				       fwnames, ARRAY_SIZE(fwnames));
++				       fwnames, n_items);
+ 	if (!fwreq)
+ 		return NULL;
+ 
+@@ -2253,8 +2269,13 @@
+ 	fwreq->items[BRCMF_PCIE_FW_NVRAM].flags = BRCMF_FW_REQF_OPTIONAL;
+ 	fwreq->items[BRCMF_PCIE_FW_CLM].type = BRCMF_FW_TYPE_BINARY;
+ 	fwreq->items[BRCMF_PCIE_FW_CLM].flags = BRCMF_FW_REQF_OPTIONAL;
+-	fwreq->items[BRCMF_PCIE_FW_TXCAP].type = BRCMF_FW_TYPE_BINARY;
+-	fwreq->items[BRCMF_PCIE_FW_TXCAP].flags = BRCMF_FW_REQF_OPTIONAL;
++	/* Samsung BCM4375 firmware has no separate TXCAP asset. Its own
++	 * NVRAM and CLM remain required for the device-specific RF limits.
++	 */
++	if (n_items > BRCMF_PCIE_FW_TXCAP) {
++		fwreq->items[BRCMF_PCIE_FW_TXCAP].type = BRCMF_FW_TYPE_BINARY;
++		fwreq->items[BRCMF_PCIE_FW_TXCAP].flags = BRCMF_FW_REQF_OPTIONAL;
++	}
+ 	/* NVRAM reserves PCI domain 0 for Broadcom's SDK faked bus */
+ 	fwreq->domain_nr = pci_domain_nr(devinfo->pdev->bus) + 1;
+ 	fwreq->bus_nr = devinfo->pdev->bus->number;
+@@ -2750,6 +2771,7 @@
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4377_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4378_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4387_DEVICE_ID, WCC_SEED),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4375_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43752_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(CY_PCIE_54591_DEVICE_ID, CYW),
+ 	{ /* end: all zeroes */ }

@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clk/samsung/clk-exynos9820.c
++++ b/drivers/clk/samsung/clk-exynos9820.c
+@@ -788,6 +788,7 @@
+ 	0x0100, 0x0140, 0x0260, 0x0800, 0x1804, 0x1828,
+ 	0x203c, 0x2040, 0x20e8, 0x20ec,
+ 	0x0160, 0x1808, 0x2044, 0x2048,
++	0x02e0, 0x1838, 0x2110, 0x2114,
+ };
+ 
+ PNAME(mout_peric1_bus_user_p) = { "oscclk", "dout_cmu_peric1_bus" };
+@@ -802,6 +803,8 @@
+ 	    mout_peric1_ip_user_p, 0x0140, 4, 1),
+ 	MUX(CLK_MOUT_PERIC1_I2C_CAM2_USER, "mout_peric1_i2c_cam2_user",
+ 	    mout_peric1_ip_user_p, 0x0160, 4, 1),
++	MUX(CLK_MOUT_PERIC1_USI_I2C_USER, "mout_peric1_usi_i2c_user",
++	    mout_peric1_ip_user_p, 0x02e0, 4, 1),
+ };
+ 
+ static const struct samsung_div_clock peric1_div_clks[] __initconst = {
+@@ -811,6 +814,8 @@
+ 	    "mout_peric1_i2c_cam1_user", 0x1804, 0, 4),
+ 	DIV(CLK_DOUT_PERIC1_I2C_CAM2, "dout_peric1_i2c_cam2",
+ 	    "mout_peric1_i2c_cam2_user", 0x1808, 0, 4),
++	DIV(CLK_DOUT_PERIC1_USI_I2C, "dout_peric1_usi_i2c",
++	    "mout_peric1_usi_i2c_user", 0x1838, 0, 4),
+ };
+ 
+ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
+@@ -826,6 +831,11 @@
+ 	     "dout_peric1_i2c_cam2", 0x2044, 21, CLK_SET_RATE_PARENT, 0),
+ 	GATE(CLK_GOUT_PERIC1_I2C_CAM2_PCLK, "gout_peric1_i2c_cam2_pclk",
+ 	     "mout_peric1_bus_user", 0x2048, 21, 0, 0),
++	/* USI17 I2C channel: audio amplifier bus (hsi2c_38, 0x109a0000). */
++	GATE(CLK_GOUT_PERIC1_USI17_I2C_IPCLK, "gout_peric1_usi17_i2c_ipclk",
++	     "dout_peric1_usi_i2c", 0x2110, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_USI17_I2C_PCLK, "gout_peric1_usi17_i2c_pclk",
++	     "mout_peric1_bus_user", 0x2114, 21, 0, 0),
+ };
+ 
+ static const struct samsung_cmu_info peric1_cmu_info __initconst = {
+--- a/include/dt-bindings/clock/exynos9820.h
++++ b/include/dt-bindings/clock/exynos9820.h
+@@ -142,7 +142,11 @@
+ #define CLK_DOUT_PERIC1_I2C_CAM2		11
+ #define CLK_GOUT_PERIC1_I2C_CAM2_IPCLK		12
+ #define CLK_GOUT_PERIC1_I2C_CAM2_PCLK		13
+-#define CLK_NR_PERIC1		14
++#define CLK_MOUT_PERIC1_USI_I2C_USER		14
++#define CLK_DOUT_PERIC1_USI_I2C			15
++#define CLK_GOUT_PERIC1_USI17_I2C_IPCLK		16
++#define CLK_GOUT_PERIC1_USI17_I2C_PCLK		17
++#define CLK_NR_PERIC1		18
+ 
+ /* CMU_FSYS0A */
+ #define CLK_MOUT_FSYS0A_BUS_USER				1
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -1128,7 +1128,7 @@
+ 	depends on MFD_CS47L90
+ 
+ config SND_SOC_CS47L92
+-	tristate
++	tristate "Cirrus Logic CS47L92/CS47L93 codec"
+ 	depends on MFD_CS47L92
+ 
+ config SND_SOC_CS48L32

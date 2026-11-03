@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clk/samsung/clk-exynos9820.c
++++ b/drivers/clk/samsung/clk-exynos9820.c
+@@ -793,6 +793,7 @@
+ 	0x0180, 0x180c, 0x204c, 0x2050,
+ 	0x20c0, 0x20c4,
+ 	0x01c0, 0x1814, 0x2098, 0x209c,
++	0x0220, 0x1820, 0x20c8, 0x20cc,
+ };
+ 
+ PNAME(mout_peric1_bus_user_p) = { "oscclk", "dout_cmu_peric1_bus" };
+@@ -815,6 +816,8 @@
+ 	    mout_peric1_ip_user_p, 0x0180, 4, 1),
+ 	MUX(CLK_MOUT_PERIC1_UART_BT_USER, "mout_peric1_uart_bt_user",
+ 	    mout_peric1_ip_user_p, 0x01c0, 4, 1),
++	MUX(CLK_MOUT_PERIC1_USI08_USI_USER, "mout_peric1_usi08_usi_user",
++	    mout_peric1_ip_user_p, 0x0220, 4, 1),
+ };
+ 
+ static const struct samsung_div_clock peric1_div_clks[] __initconst = {
+@@ -832,6 +835,8 @@
+ 	    "mout_peric1_i2c_cam3_user", 0x180c, 0, 4),
+ 	DIV(CLK_DOUT_PERIC1_UART_BT, "dout_peric1_uart_bt",
+ 	    "mout_peric1_uart_bt_user", 0x1814, 0, 4),
++	DIV(CLK_DOUT_PERIC1_USI08_USI, "dout_peric1_usi08_usi",
++	    "mout_peric1_usi08_usi_user", 0x1820, 0, 4),
+ };
+ 
+ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
+@@ -873,6 +878,11 @@
+ 	     "dout_peric1_uart_bt", 0x2098, 21, CLK_SET_RATE_PARENT, 0),
+ 	GATE(CLK_GOUT_PERIC1_UART_BT_PCLK, "gout_peric1_uart_bt_pclk",
+ 	     "mout_peric1_bus_user", 0x209c, 21, 0, 0),
++	/* USI08_USI as I2C: NFC controller bus (hsi2c_20, 0x108e0000). */
++	GATE(CLK_GOUT_PERIC1_USI08_USI_IPCLK, "gout_peric1_usi08_usi_ipclk",
++	     "dout_peric1_usi08_usi", 0x20c8, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_USI08_USI_PCLK, "gout_peric1_usi08_usi_pclk",
++	     "mout_peric1_bus_user", 0x20cc, 21, 0, 0),
+ 	/* USI17 I2C channel: audio amplifier bus (hsi2c_38, 0x109a0000). */
+ 	GATE(CLK_GOUT_PERIC1_USI17_I2C_IPCLK, "gout_peric1_usi17_i2c_ipclk",
+ 	     "dout_peric1_usi_i2c", 0x2110, 21, CLK_SET_RATE_PARENT, 0),
+--- a/include/dt-bindings/clock/exynos9820.h
++++ b/include/dt-bindings/clock/exynos9820.h
+@@ -162,7 +162,11 @@
+ #define CLK_DOUT_PERIC1_UART_BT		31
+ #define CLK_GOUT_PERIC1_UART_BT_IPCLK		32
+ #define CLK_GOUT_PERIC1_UART_BT_PCLK		33
+-#define CLK_NR_PERIC1		34
++#define CLK_MOUT_PERIC1_USI08_USI_USER		34
++#define CLK_DOUT_PERIC1_USI08_USI		35
++#define CLK_GOUT_PERIC1_USI08_USI_IPCLK		36
++#define CLK_GOUT_PERIC1_USI08_USI_PCLK		37
++#define CLK_NR_PERIC1		38
+ 
+ /* CMU_FSYS0A */
+ #define CLK_MOUT_FSYS0A_BUS_USER				1

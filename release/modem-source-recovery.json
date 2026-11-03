@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "date": "2026-10-31",
+  "files": [
+    {
+      "path": "userspace/modem/rfsd.py",
+      "recovered_sha256": "13c1c13d8f8f8d7bc7202840fafe47b0e40d42c1dd5fda8067c5907b153fe77f",
+      "sha256": "0796bcd891006e3bb9de2f249c8e31e5a3323379e7822103cdf2baf4155af9bc",
+      "basis": "Original implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added."
+    },
+    {
+      "path": "userspace/modem/s10cp.py",
+      "recovered_sha256": "48b8e38fca692a3645e7f28d4f28fd4fd8931d00f7a694b4c1cacebdb2e05eed",
+      "sha256": "51a946357653a6faf93753fdb2834f6b4dbe7ac0929cb04149f38f1d6d3e9254",
+      "basis": "Original implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added."
+    },
+    {
+      "path": "userspace/modem/ipc.py",
+      "recovered_sha256": "d51ffd67c310bbd363319759171c66f2e21c6335ef12a777fb19d918b0cde52c",
+      "sha256": "1073eb52e4da05976152166e0da7766c027690cd490babcba64f3eaca0633432",
+      "basis": "Original implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added."
+    },
+    {
+      "path": "userspace/modem/boot/s10-cp-boot.c",
+      "sha256": "d6c71ed041c22f0cded0bfc5ca3fe35c7ea79fbf2e18204ba41e35fa950621d2",
+      "basis": "Existing GPL-2.0-only notice retained; source recovered byte-for-byte. No firmware or mutable modem data copied."
+    },
+    {
+      "path": "userspace/modem/boot/Makefile",
+      "sha256": "085814021e754aa72df60cc8e28327253e8688431fe9b0394f05b2ea163a1385",
+      "basis": "Existing GPL-2.0-only notice retained; source recovered byte-for-byte. No firmware or mutable modem data copied."
+    },
+    {
+      "path": "userspace/modem/tty/s10-modem-tty.c",
+      "sha256": "ff9296faa71c3c08b8e5342b31ac4f99a21f29256dbc8eb696dd483bd281834c",
+      "basis": "Existing GPL-2.0-only notice retained; source recovered byte-for-byte. No firmware or mutable modem data copied."
+    },
+    {
+      "path": "userspace/modem/tty/Makefile",
+      "sha256": "51bd8c1b22b88816740ddfc5720b9fba1dcc24ef42f6fb10c1717633feea8f52",
+      "basis": "Existing GPL-2.0-only notice retained; source recovered byte-for-byte. No firmware or mutable modem data copied."
+    },
+    {
+      "path": "userspace/modem/boot-link.sh",
+      "recovered_sha256": "f7ba6bf8310b62f592726f81af7a9d1f9e1dc587a3c4e1b59ea9b6e6cb6561f6",
+      "sha256": "ae0d377714414691d402601c9e61acaf6a031b1381a95bc275b1d6d64a6040e8",
+      "basis": "Original startup/firmware-copy implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added; not executed."
+    },
+    {
+      "path": "userspace/modem/boot2.sh",
+      "recovered_sha256": "8d6707320d1d9ac210158b157c8f333aa90e459b725283a708ddaa6606475019",
+      "sha256": "e7fef360b92b87cef5f299fab2c5cb34cc0e351367f984785a0a66fa596e7444",
+      "basis": "Original startup/firmware-copy implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added; not executed."
+    },
+    {
+      "path": "userspace/modem/run.sh",
+      "recovered_sha256": "5b19c8aaa06e3129484f4ec967fd6dc1a1435458414359b554ac61402abc3acd",
+      "sha256": "63b341fc259f45da1f248b68f9fa2b5fc948ba615bc9d17c589469664b91142e",
+      "basis": "Original startup/firmware-copy implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added; not executed."
+    },
+    {
+      "path": "userspace/modem/load-radio.py",
+      "recovered_sha256": "0c960d5b88fa66f40cb1bf7dee8c40e25f8b75d55b4579ea82a3acc2dce540de",
+      "sha256": "7660d4d082eca2b26680750cbae866679268d1aeb221b16938bac9e952a9f268",
+      "basis": "Original startup/firmware-copy implementation; explicit project owner GPL-2.0-only authorization, 2026-10-31. Only SPDX notice added; not executed."
+    }
+  ]
+}

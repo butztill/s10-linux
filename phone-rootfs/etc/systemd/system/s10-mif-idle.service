@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Lower MIF/INT bus clocks while the panel is off
+ConditionPathExists=/sys/class/drm/card1-DSI-1/dpms
+
+[Service]
+ExecStartPre=/sbin/modprobe s10-mif-dvfs
+ExecStart=/usr/local/lib/s10-power/s10-mif-idle.sh
+# unloading the module restores the boot-time rates
+ExecStopPost=-/sbin/modprobe -r s10-mif-dvfs
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

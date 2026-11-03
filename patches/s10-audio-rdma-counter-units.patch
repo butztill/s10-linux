@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/s10-abox-asoc/snd-soc-s10-abox.c
++++ b/drivers/s10-abox-asoc/snd-soc-s10-abox.c
+@@ -130,7 +130,12 @@
+ 		return 0;
+ 	off = ((st >> 12) & 0xffff) << 4;	/* RBUF_OFFSET, 16-byte units */
+ 	off -= off % period;
+-	pos = off + (st & 0xfff);		/* RBUF_CNT: bytes in period */
++	/* On this ABOX v2.0.1, RBUF_CNT advances in 16-byte DMA beats,
++	 * just like RBUF_OFFSET. Treating it as bytes creates a sawtooth
++	 * pointer with jumps at each period, corrupting ALSA scheduling.
++	 * Muted 48 kHz S16 stereo telemetry verifies 192000 bytes/second.
++	 */
++	pos = off + ((st & 0xfff) << 4);
+ 	return bytes_to_frames(rt, pos % buffer);
+ }
+ 

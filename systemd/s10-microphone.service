@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Galaxy S10 built-in microphone capture
+Requires=s10-audio.service
+After=s10-audio.service
+ConditionKernelVersion=7.2.0-rc2-s10-panfrost1
+ConditionPathExists=/sys/firmware/devicetree/base/soc@0/usi@104700c0/spi@10470000/codec@0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/enable-s10-microphone
+RemainAfterExit=yes
+TimeoutStartSec=20
+
+[Install]
+WantedBy=multi-user.target

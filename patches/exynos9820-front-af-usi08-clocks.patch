@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clk/samsung/clk-exynos9820.c
++++ b/drivers/clk/samsung/clk-exynos9820.c
+@@ -791,6 +791,7 @@
+ 	0x02e0, 0x1838, 0x2110, 0x2114,
+ 	0x0120, 0x1800, 0x2034, 0x2038, 0x20b0, 0x20b4,
+ 	0x0180, 0x180c, 0x204c, 0x2050,
++	0x20c0, 0x20c4,
+ };
+ 
+ PNAME(mout_peric1_bus_user_p) = { "oscclk", "dout_cmu_peric1_bus" };
+@@ -857,6 +858,11 @@
+ 	     "dout_peric1_usi_i2c", 0x20b0, 21, CLK_SET_RATE_PARENT, 0),
+ 	GATE(CLK_GOUT_PERIC1_USI07_I2C_PCLK, "gout_peric1_usi07_i2c_pclk",
+ 	     "mout_peric1_bus_user", 0x20b4, 21, 0, 0),
++	/* USI08 I2C: front lens actuator (hsi2c_21, 0x108f0000). */
++	GATE(CLK_GOUT_PERIC1_USI08_I2C_IPCLK, "gout_peric1_usi08_i2c_ipclk",
++	     "dout_peric1_usi_i2c", 0x20c0, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_USI08_I2C_PCLK, "gout_peric1_usi08_i2c_pclk",
++	     "mout_peric1_bus_user", 0x20c4, 21, 0, 0),
+ 	/* USI17 I2C channel: audio amplifier bus (hsi2c_38, 0x109a0000). */
+ 	GATE(CLK_GOUT_PERIC1_USI17_I2C_IPCLK, "gout_peric1_usi17_i2c_ipclk",
+ 	     "dout_peric1_usi_i2c", 0x2110, 21, CLK_SET_RATE_PARENT, 0),
+--- a/include/dt-bindings/clock/exynos9820.h
++++ b/include/dt-bindings/clock/exynos9820.h
+@@ -156,7 +156,9 @@
+ #define CLK_DOUT_PERIC1_I2C_CAM3		25
+ #define CLK_GOUT_PERIC1_I2C_CAM3_IPCLK		26
+ #define CLK_GOUT_PERIC1_I2C_CAM3_PCLK		27
+-#define CLK_NR_PERIC1		28
++#define CLK_GOUT_PERIC1_USI08_I2C_IPCLK		28
++#define CLK_GOUT_PERIC1_USI08_I2C_PCLK		29
++#define CLK_NR_PERIC1		30
+ 
+ /* CMU_FSYS0A */
+ #define CLK_MOUT_FSYS0A_BUS_USER				1

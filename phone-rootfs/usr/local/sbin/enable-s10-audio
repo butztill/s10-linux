@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Restore the tested firmware-free speaker path; keep AUD held until reboot.
+set -eu
+test "$(uname -r)" = 7.2.0-rc2-s10-panfrost1
+test -d /sys/firmware/devicetree/base/soc@0/abox-speaker-card
+modprobe snd_soc_cs35l41_i2c
+modprobe s10_abox_session
+modprobe snd_soc_s10_abox bottom_slot=0 receiver_slot=1 vol_factor=0x800000
+# Restore the previously audible unity RDMA gain; desktop volume controls level.
+printf '%s\n' 8388608 > /sys/module/snd_soc_s10_abox/parameters/vol_factor
+amixer -q -c S10 sset 'Bottom PCM Source' ASP
+amixer -q -c S10 sset 'Receiver PCM Source' ASP
+# Restore the previously tested ASP path, without enabling DSP/boost experiments.
+amixer -q -c S10 sset 'Bottom Digital PCM' 0dB
+amixer -q -c S10 sset 'Receiver Digital PCM' 0dB
+test "$(cat /proc/asound/S10/id)" = S10
+printf '%s\n' 'S10 speaker card ready; AUD stays powered until reboot.'

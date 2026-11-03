@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Prepare experimental Galaxy S10 Panfrost before KDE
+ConditionKernelVersion=7.2.0-rc2-s10-panfrost1
+ConditionPathExists=/sys/devices/platform/soc@0/18500000.gpu
+After=systemd-modules-load.service
+Before=plasma-mobile.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/enable-s10-panfrost
+RemainAfterExit=yes
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=IMS registration and SMS over IP (imsd) inside the VoWiFi tunnel namespace
+After=s10-vowifi-tun.service
+BindsTo=s10-vowifi-tun.service
+
+[Service]
+ExecStart=/bin/sh /home/user/s10-modem/vowifi/run-imsd.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

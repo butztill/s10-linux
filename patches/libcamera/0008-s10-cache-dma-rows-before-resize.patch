@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/libcamera/software_isp/s10_bayer_resize.h
++++ b/src/libcamera/software_isp/s10_bayer_resize.h
+@@ -3,6 +3,7 @@
+ #include <algorithm>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstring>
+ #include <vector>
+ 
+ namespace libcamera {
+@@ -37,6 +38,7 @@
+ 			y_[y] = oy + 2 * std::min<uint64_t>(ch / 2 - 1,
+ 				(uint64_t(2 * (y / 2) + 1) * (ch / 2)) / dh) + (y & 1);
+ 		stride_ = stride;
++		row_.resize(size_t(sw) * 2);
+ 		length_ = size_t(sh - 1) * stride + sw * 2;
+ 		pixels_.resize(size_t(dw) * dh * 2);
+ 		return true;
+@@ -47,7 +49,10 @@
+ 			return false;
+ 		uint8_t *dst = pixels_.data();
+ 		for (unsigned int y : y_) {
+-			const uint8_t *line = src + size_t(y) * stride_;
++			/* DMA mappings can be uncached: gather from a cached row, not
++			 * individual byte loads over the device/interconnect bus. */
++			std::memcpy(row_.data(), src + size_t(y) * stride_, row_.size());
++			const uint8_t *line = row_.data();
+ 			for (unsigned int x : x_) {
+ 				*dst++ = line[2 * x];
+ 				*dst++ = line[2 * x + 1];
+@@ -60,6 +65,6 @@
+ 	unsigned int stride_ = 0;
+ 	size_t length_ = 0;
+ 	std::vector<unsigned int> x_, y_;
+-	std::vector<uint8_t> pixels_;
++	std::vector<uint8_t> pixels_, row_;
+ };
+ } /* namespace libcamera */

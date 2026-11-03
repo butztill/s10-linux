@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "firmware": "G973FXXSGHWC2",
+  "eutran_voice_preference": 0,
+  "utran_voice_preference": 0
+}

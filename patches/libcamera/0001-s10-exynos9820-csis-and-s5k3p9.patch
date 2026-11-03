@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+diff -ruN a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+--- a/src/ipa/libipa/camera_sensor_helper.cpp	2026-07-10 12:12:38.000000000 +0200
++++ b/src/ipa/libipa/camera_sensor_helper.cpp	2026-10-20 22:55:45.628359812 +0200
+@@ -827,6 +827,19 @@
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("ov13858", CameraSensorHelperOv13858)
+ 
++class CameraSensorHelperS5k3p9 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5k3p9()
++	{
++		/* Measured on a Galaxy S10: dark level 64 at 10 bits. */
++		blackLevel_ = 4096;
++		/* The analogue gain register is gain * 32 (0x20 is 1.0x). */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5k3p9", CameraSensorHelperS5k3p9)
++
+ class CameraSensorHelperVd55g1 : public CameraSensorHelper
+ {
+ public:
+diff -ruN a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+--- a/src/libcamera/pipeline/simple/simple.cpp	2026-07-10 12:12:38.000000000 +0200
++++ b/src/libcamera/pipeline/simple/simple.cpp	2026-10-20 22:55:45.627386235 +0200
+@@ -257,6 +257,7 @@
+ 
+ static const SimplePipelineInfo supportedDevices[] = {
+ 	{ "dcmipp", {}, false },
++	{ "exynos9820-csis", {}, true },
+ 	{ "imx7-csi", { { "pxp", 1 } }, true },
+ 	{ "intel-ipu6", {}, true },
+ 	{ "intel-ipu7", {}, true },

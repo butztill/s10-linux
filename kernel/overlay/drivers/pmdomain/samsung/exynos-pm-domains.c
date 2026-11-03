@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: GPL-2.0
+//
+// Exynos Generic power domain support.
+//
+// Copyright (c) 2012 Samsung Electronics Co., Ltd.
+//		http://www.samsung.com
+//
+// Implementation of Exynos specific power domain control which is used in
+// conjunction with runtime-pm. Support for both device-tree and non-device-tree
+// based power domain support is included.
+
+#include <linux/io.h>
+#include <linux/err.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/pm_domain.h>
+#include <linux/delay.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/pm_runtime.h>
+#include <linux/arm-smccc.h>
+
+struct exynos_pm_domain_config {
+	/* Value for LOCAL_PWR_CFG and STATUS fields for each domain */
+	u32 local_pwr_cfg;
+};
+
+/*
+ * Exynos specific wrapper around the generic power domain
+ */
+struct exynos_pm_domain {
+	void __iomem *base;
+	struct generic_pm_domain pd;
+	u32 local_pwr_cfg;
+	u32 tzpc_smc;
+};
+
+/*
+ * Exynos9820 stock (pmucal_local.c, exynos-el3_mon.c): before a domain goes down the EL3 monitor
+ * saves its DTZPC state, after it comes up EL3 restores it. Without this EL3 still believes the
+ * domain is on and touches it when restoring after system sleep.
+ */
+#define SMC_CMD_PREPARE_PD_ONOFF	0x82000410
+#define EXYNOS_GET_IN_PD_DOWN		0
+#define EXYNOS_WAKEUP_PD_DOWN		1
+#define RUNTIME_PM_TZPC_GROUP		2
+
+static void exynos_pd_tzpc_smc(struct exynos_pm_domain *pd, unsigned long op)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SMC_CMD_PREPARE_PD_ONOFF, op, pd->tzpc_smc, RUNTIME_PM_TZPC_GROUP,
+		      0, 0, 0, 0, &res);
+	if (res.a0)
+		pr_err("%s: DTZPC %s smc failed: %#lx\n", pd->pd.name,
+		       op == EXYNOS_GET_IN_PD_DOWN ? "save" : "restore", res.a0);
+}
+
+static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
+{
+	struct exynos_pm_domain *pd;
+	void __iomem *base;
+	u32 timeout, pwr;
+	char *op;
+
+	pd = container_of(domain, struct exynos_pm_domain, pd);
+	base = pd->base;
+
+	pwr = power_on ? pd->local_pwr_cfg : 0;
+	pr_info("S10PM: pd %s %s\n", domain->name, power_on ? "ON" : "OFF");
+	if (!power_on && pd->tzpc_smc)
+		exynos_pd_tzpc_smc(pd, EXYNOS_GET_IN_PD_DOWN);
+	writel_relaxed(pwr, base);
+
+	/* Wait max 1ms */
+	timeout = 10;
+
+	while ((readl_relaxed(base + 0x4) & pd->local_pwr_cfg) != pwr) {
+		if (!timeout) {
+			op = (power_on) ? "enable" : "disable";
+			pr_err("Power domain %s %s failed\n", domain->name, op);
+			return -ETIMEDOUT;
+		}
+		timeout--;
+		cpu_relax();
+		usleep_range(80, 100);
+	}
+	if (power_on && pd->tzpc_smc)
+		exynos_pd_tzpc_smc(pd, EXYNOS_WAKEUP_PD_DOWN);
+	pr_info("S10PM: pd %s %s done\n", domain->name, power_on ? "ON" : "OFF");
+
+	return 0;
+}
+
+static int exynos_pd_power_on(struct generic_pm_domain *domain)
+{
+	return exynos_pd_power(domain, true);
+}
+
+static int exynos_pd_power_off(struct generic_pm_domain *domain)
+{
+	return exynos_pd_power(domain, false);
+}
+
+static const struct exynos_pm_domain_config exynos4210_cfg = {
+	.local_pwr_cfg		= 0x7,
+};
+
+static const struct exynos_pm_domain_config exynos5433_cfg = {
+	.local_pwr_cfg		= 0xf,
+};
+
+static const struct exynos_pm_domain_config exynos9820_cfg = {
+	.local_pwr_cfg		= 0x1,
+};
+
+static const struct of_device_id exynos_pm_domain_of_match[] = {
+	{
+		.compatible = "samsung,exynos4210-pd",
+		.data = &exynos4210_cfg,
+	}, {
+		.compatible = "samsung,exynos5433-pd",
+		.data = &exynos5433_cfg,
+	}, {
+		.compatible = "samsung,exynos9820-pd",
+		.data = &exynos9820_cfg,
+	},
+	{ },
+};
+
+static const char *exynos_get_domain_name(struct device *dev,
+					  struct device_node *node)
+{
+	const char *name;
+
+	if (of_property_read_string(node, "label", &name) < 0)
+		name = kbasename(node->full_name);
+	return devm_kstrdup_const(dev, name, GFP_KERNEL);
+}
+
+static int exynos_pd_probe(struct platform_device *pdev)
+{
+	const struct exynos_pm_domain_config *pm_domain_cfg;
+	struct device *dev = &pdev->dev;
+	struct device_node *np = dev->of_node;
+	struct of_phandle_args child, parent;
+	struct exynos_pm_domain *pd;
+	int on, ret;
+
+	pm_domain_cfg = of_device_get_match_data(dev);
+	pd = devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
+	if (!pd)
+		return -ENOMEM;
+
+	pd->pd.name = exynos_get_domain_name(dev, np);
+	if (!pd->pd.name)
+		return -ENOMEM;
+
+	pd->base = of_iomap(np, 0);
+	if (!pd->base)
+		return -ENODEV;
+
+	pd->pd.power_off = exynos_pd_power_off;
+	pd->pd.power_on = exynos_pd_power_on;
+	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
+	of_property_read_u32(np, "samsung,tzpc-smc", &pd->tzpc_smc);
+
+	/*
+	 * Some Samsung platforms with bootloaders turning on the splash-screen
+	 * and handing it over to the kernel, requires the power-domains to be
+	 * reset during boot.
+	 */
+	if (IS_ENABLED(CONFIG_ARM) &&
+	    of_device_is_compatible(np, "samsung,exynos4210-pd"))
+		exynos_pd_power_off(&pd->pd);
+
+	on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+
+	pm_genpd_init(&pd->pd, NULL, !on);
+	ret = of_genpd_add_provider_simple(np, &pd->pd);
+
+	if (ret == 0 && of_parse_phandle_with_args(np, "power-domains",
+				      "#power-domain-cells", 0, &parent) == 0) {
+		child.np = np;
+		child.args_count = 0;
+
+		if (of_genpd_add_subdomain(&parent, &child))
+			pr_warn("%pOF failed to add subdomain: %pOF\n",
+				parent.np, child.np);
+		else
+			pr_info("%pOF has as child subdomain: %pOF.\n",
+				parent.np, child.np);
+	}
+
+	pm_runtime_enable(dev);
+	return ret;
+}
+
+static struct platform_driver exynos_pd_driver = {
+	.probe	= exynos_pd_probe,
+	.driver	= {
+		.name		= "exynos-pd",
+		.of_match_table	= exynos_pm_domain_of_match,
+		.suppress_bind_attrs = true,
+	}
+};
+
+static __init int exynos4_pm_init_power_domain(void)
+{
+	return platform_driver_register(&exynos_pd_driver);
+}
+core_initcall(exynos4_pm_init_power_domain);

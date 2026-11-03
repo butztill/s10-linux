@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/soc/samsung/exynos-pmu.c
++++ b/drivers/soc/samsung/exynos-pmu.c
+@@ -219,7 +219,7 @@
+ /* Called from CPU PM notifier (CPUIdle code path) with IRQs disabled */
+ static int exynos_cpu_pmu_online(void)
+ {
+-	int cpu;
++	int cpu, ret;
+ 
+ 	raw_spin_lock(&pmu_context->cpupm_lock);
+ 
+@@ -229,8 +229,12 @@
+ 	}
+ 
+ 	cpu = smp_processor_id();
+-	pmu_context->pmu_data->cpu_pmu_online(pmu_context, cpu);
++	ret = pmu_context->pmu_data->cpu_pmu_online(pmu_context, cpu);
+ 	raw_spin_unlock(&pmu_context->cpupm_lock);
++
++	/* Never stop the chain: GIC and other CPU context still need restoring. */
++	if (ret)
++		pr_err_ratelimited("exynos-pmu: CPU%d restore failed: %d\n", cpu, ret);
+ 
+ 	return NOTIFY_OK;
+ }
+@@ -284,7 +288,7 @@
+ 	ret = pmu_context->pmu_data->cpu_pmu_offline(pmu_context, cpu);
+ 	raw_spin_unlock(&pmu_context->cpupm_lock);
+ 
+-	return ret ? NOTIFY_BAD : NOTIFY_OK;
++	return ret ? notifier_from_errno(ret) : NOTIFY_OK;
+ }
+ 
+ /* Called from CPU hot plug callback with IRQs enabled */
+@@ -322,6 +326,7 @@
+ 		return exynos_cpu_pmu_offline();
+ 
+ 	case CPU_PM_EXIT:
++	case CPU_PM_ENTER_FAILED:
+ 		return exynos_cpu_pmu_online();
+ 	}
+ 
+--- a/drivers/soc/samsung/exynos9820-pmu.c
++++ b/drivers/soc/samsung/exynos9820-pmu.c
+@@ -5,124 +5,142 @@
+  * EXYNOS9820 PMU (Power Management Unit) support
+  */
+ 
+-#include <linux/array_size.h>
+ #include <linux/bits.h>
++#include <linux/regmap.h>
+ #include <linux/soc/samsung/exynos-pmu.h>
+ #include <linux/soc/samsung/exynos-regs-pmu.h>
+-#include <linux/regmap.h>
+-#include <linux/topology.h>
++
++#include <asm/smp_plat.h>
+ 
+ #include "exynos-pmu.h"
+ 
+-static unsigned exynos9820_cluster_offsets[] = {
+-	GS101_CLUSTER0_OFFSET,
+-	GS101_CLUSTER1_OFFSET,
+-	GS101_CLUSTER2_OFFSET,
++struct exynos9820_cpu_pmu_regs {
++	u32 inform;
++	u32 mask;
++	u32 int_en;
+ };
+ 
+-static int exynos9820_cpu_pmu_offline(struct exynos_pmu_context *pmu_context,
+-				      unsigned int cpu)
+-	__must_hold(&pmu_context->cpupm_lock)
++/*
++ * PMUCAL core00..03, core10..11, core20..21 use hardware slots 0..7.
++ * Aff0 0..5 share Aff1=0; the two Cheetah CPUs use Aff1=1/Aff0=0..1.
++ * These slots are not Linux scheduler cluster IDs or logical CPU numbers.
++ */
++static const u32 exynos9820_cpu_int_en[] = {
++	0x1044, 0x10c4, 0x1144, 0x11c4,
++	0x1344, 0x13c4, 0x1544, 0x15c4,
++};
++
++static int exynos9820_cpu_pmu_regs(unsigned int cpu,
++				   struct exynos9820_cpu_pmu_regs *regs)
+ {
+-	int smp_id, cluster_id, core_id;
+-	u32 reg, mask;
++	u64 mpidr = cpu_logical_map(cpu);
++	unsigned int aff0 = MPIDR_AFFINITY_LEVEL(mpidr, 0);
++	unsigned int aff1 = MPIDR_AFFINITY_LEVEL(mpidr, 1);
++	unsigned int slot;
+ 
+-	smp_id = smp_processor_id();
+-	if (cpu != smp_id) {
+-		pr_err_ratelimited(
+-			"offline: not on target CPU: cpu=%u smp_id=%d\n", cpu,
+-			smp_id);
++	if (cpu != smp_processor_id())
++		return -EINVAL;
++	if (MPIDR_AFFINITY_LEVEL(mpidr, 2) ||
++	    MPIDR_AFFINITY_LEVEL(mpidr, 3))
++		return -EINVAL;
+ 
++	if (!aff1 && aff0 < 6)
++		slot = aff0;
++	else if (aff1 == 1 && aff0 < 2)
++		slot = 6 + aff0;
++	else
+ 		return -EINVAL;
+-	}
+ 
+-	cluster_id = topology_cluster_id(cpu);
+-	if (cluster_id < 0 ||
+-	    cluster_id >= ARRAY_SIZE(exynos9820_cluster_offsets)) {
+-		pr_err_ratelimited("invalid cluster ID for cpu: %u\n", cpu);
+-
+-		return -EINVAL;
+-	}
+-
+-	core_id = topology_core_id(cpu);
+-	if (core_id < 0) {
+-		pr_err_ratelimited("invalid core ID for cpu: %u\n", cpu);
+-
+-		return -EINVAL;
+-	}
+-
+-	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(smp_processor_id()),
+-		     CPU_INFORM_C2);
+-
+-	mask = BIT(cpu);
+-	regmap_update_bits(pmu_context->pmuintrgen, EXYNOS_GRP2_INTR_BID_ENABLE,
+-			   mask, BIT(cpu));
+-
+-	regmap_read(pmu_context->pmuintrgen, EXYNOS_GRP1_INTR_BID_UPEND, &reg);
+-	regmap_write(pmu_context->pmuintrgen, EXYNOS_GRP1_INTR_BID_CLEAR,
+-		     reg & mask);
+-
+-	mask = (BIT(cpu + 8));
+-	regmap_read(pmu_context->pmuintrgen, EXYNOS_GRP1_INTR_BID_UPEND, &reg);
+-	regmap_write(pmu_context->pmuintrgen, EXYNOS_GRP1_INTR_BID_CLEAR,
+-		     reg & mask);
+-
+-	regmap_update_bits(
+-		pmu_context->pmureg,
+-		GS101_CLUSTER_CPU_INT_EN(exynos9820_cluster_offsets[cluster_id],
+-					 core_id),
+-		BIT(3), BIT(3));
+-
++	regs->inform = GS101_CPU_INFORM(slot);
++	regs->mask = BIT(slot);
++	regs->int_en = exynos9820_cpu_int_en[slot];
+ 	return 0;
+ }
+ 
+-static int exynos9820_cpu_pmu_online(struct exynos_pmu_context *pmu_context,
++/* Also used to unwind partially completed entry; attempt every restore step. */
++static int exynos9820_cpu_pmu_restore(struct exynos_pmu_context *ctx,
++				      const struct exynos9820_cpu_pmu_regs *regs)
++{
++	u32 pending;
++	int ret, err;
++
++	ret = regmap_write(ctx->pmureg, regs->inform, CPU_INFORM_CLEAR);
++	err = regmap_update_bits(ctx->pmuintrgen, EXYNOS_GRP2_INTR_BID_ENABLE,
++				 regs->mask, 0);
++	if (!ret)
++		ret = err;
++
++	err = regmap_read(ctx->pmuintrgen, EXYNOS_GRP2_INTR_BID_UPEND,
++			  &pending);
++	if (!err)
++		err = regmap_write(ctx->pmuintrgen, EXYNOS_GRP2_INTR_BID_CLEAR,
++				   pending & regs->mask);
++	if (!ret)
++		ret = err;
++
++	err = regmap_update_bits(ctx->pmureg, regs->int_en, BIT(3), 0);
++	return ret ? ret : err;
++}
++
++static int exynos9820_cpu_pmu_offline(struct exynos_pmu_context *ctx,
++				      unsigned int cpu)
++	__must_hold(&ctx->cpupm_lock)
++{
++	struct exynos9820_cpu_pmu_regs regs;
++	u32 pending;
++	int ret, restore_ret;
++
++	ret = exynos9820_cpu_pmu_regs(cpu, &regs);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(ctx->pmureg, regs.inform, CPU_INFORM_C2);
++	if (ret)
++		goto restore;
++	ret = regmap_update_bits(ctx->pmuintrgen, EXYNOS_GRP2_INTR_BID_ENABLE,
++				 regs.mask, regs.mask);
++	if (ret)
++		goto restore;
++	ret = regmap_read(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_UPEND,
++			  &pending);
++	if (ret)
++		goto restore;
++	ret = regmap_write(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_CLEAR,
++			   pending & regs.mask);
++	if (ret)
++		goto restore;
++	ret = regmap_read(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_UPEND,
++			  &pending);
++	if (ret)
++		goto restore;
++	ret = regmap_write(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_CLEAR,
++			   pending & (regs.mask << 8));
++	if (ret)
++		goto restore;
++	ret = regmap_update_bits(ctx->pmureg, regs.int_en, BIT(3), BIT(3));
++	if (!ret)
++		return 0;
++
++restore:
++	/* A failing CPU_PM_ENTER callback is not sent ENTER_FAILED itself. */
++	restore_ret = exynos9820_cpu_pmu_restore(ctx, &regs);
++	pr_err_ratelimited("exynos9820-pmu: CPU%u entry failed: %d (restore: %d)\n",
++			   cpu, ret, restore_ret);
++	return ret;
++}
++
++static int exynos9820_cpu_pmu_online(struct exynos_pmu_context *ctx,
+ 				     unsigned int cpu)
+-	__must_hold(&pmu_context->cpupm_lock)
++	__must_hold(&ctx->cpupm_lock)
+ {
+-	int smp_id, cluster_id, core_id;
+-	u32 reg, mask;
++	struct exynos9820_cpu_pmu_regs regs;
++	int ret;
+ 
+-	smp_id = smp_processor_id();
+-	if (cpu != smp_id) {
+-		pr_err_ratelimited(
+-			"offline: not on target CPU: cpu=%u smp_id=%d\n", cpu,
+-			smp_id);
++	ret = exynos9820_cpu_pmu_regs(cpu, &regs);
++	if (ret)
++		return ret;
+ 
+-		return -EINVAL;
+-	}
+-
+-	cluster_id = topology_cluster_id(cpu);
+-	if (cluster_id < 0 ||
+-	    cluster_id >= ARRAY_SIZE(exynos9820_cluster_offsets)) {
+-		pr_err_ratelimited("invalid cluster ID for cpu: %u\n", cpu);
+-		return -EINVAL;
+-	}
+-
+-	core_id = topology_core_id(cpu);
+-	if (core_id < 0) {
+-		pr_err_ratelimited("invalid core ID for cpu: %u\n", cpu);
+-		return -EINVAL;
+-	}
+-
+-	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(smp_processor_id()),
+-		     CPU_INFORM_CLEAR);
+-
+-	mask = BIT(cpu);
+-	regmap_update_bits(pmu_context->pmuintrgen, EXYNOS_GRP2_INTR_BID_ENABLE,
+-			   mask, (0 << cpu));
+-
+-	regmap_read(pmu_context->pmuintrgen, EXYNOS_GRP2_INTR_BID_UPEND, &reg);
+-	regmap_write(pmu_context->pmuintrgen, EXYNOS_GRP2_INTR_BID_CLEAR,
+-		     reg & mask);
+-
+-	regmap_update_bits(
+-		pmu_context->pmureg,
+-		GS101_CLUSTER_CPU_INT_EN(exynos9820_cluster_offsets[cluster_id],
+-					 core_id),
+-		BIT(3), 0);
+-
+-	return 0;
++	return exynos9820_cpu_pmu_restore(ctx, &regs);
+ }
+ 
+ const struct exynos_pmu_data exynos9820_pmu_data = {

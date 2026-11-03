@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clk/samsung/clk-exynos9820.c
++++ b/drivers/clk/samsung/clk-exynos9820.c
+@@ -10,6 +10,7 @@
+ #include <linux/mod_devicetable.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
+ 
+ #include <dt-bindings/clock/exynos9820.h>
+ 
+@@ -3836,6 +3837,49 @@
+ 	.drcg_offset		= EXYNOS9820_DRCG_EN_OFFSET,
+ };
+ 
++/* Experimental minimal ISPPRE clock tree, Samsung cmucal source offsets.
++ * IDs: 1 bus mux, 2 BUSP divider, 3 CSIS1, 4 CSIS DMA, 5 SYSMMU,
++ * 6 SYSREG, 7 XIU_P, 8 XIU_D, 9 BUSD reset, 10 BUSP reset,
++ * 11 CMU PCLK, 12 PDP DMA, 13 DMA QoS ACLK, 14 DMA QoS PCLK.
++ */
++static const unsigned long isppre_clk_regs[] __initconst = {
++	0x0100, 0x1804, 0x2028, 0x2038, 0x2060, 0x20d8, 0x206c,
++	0x2068, 0x20cc, 0x20d0, 0x2004, 0x2040, 0x2054, 0x2094,
++};
++PNAME(mout_isppre_bus_user_p) = { "oscclk", "dout_cmu_isppre_bus" };
++static const struct samsung_mux_clock isppre_mux_clks[] __initconst = {
++	MUX(1, "mout_isppre_bus_user", mout_isppre_bus_user_p, 0x0100, 4, 1),
++};
++static const struct samsung_div_clock isppre_div_clks[] __initconst = {
++	DIV(2, "dout_isppre_busp", "mout_isppre_bus_user", 0x1804, 0, 3),
++};
++static const struct samsung_gate_clock isppre_gate_clks[] __initconst = {
++	GATE(3, "gout_isppre_csis1", "mout_isppre_bus_user", 0x2028, 21, 0, 0),
++	GATE(4, "gout_isppre_csis_dma", "mout_isppre_bus_user", 0x2038, 21, 0, 0),
++	GATE(5, "gout_isppre_sysmmu", "mout_isppre_bus_user", 0x2060, 21, 0, 0),
++	GATE(6, "gout_isppre_sysreg", "dout_isppre_busp", 0x20d8, 21, 0, 0),
++	GATE(7, "gout_isppre_xiup", "dout_isppre_busp", 0x206c, 21, 0, 0),
++	GATE(8, "gout_isppre_xiud", "mout_isppre_bus_user", 0x2068, 21, 0, 0),
++	GATE(9, "gout_isppre_busd_reset", "mout_isppre_bus_user", 0x20cc, 21, 0, 0),
++	GATE(10, "gout_isppre_busp_reset", "dout_isppre_busp", 0x20d0, 21, 0, 0),
++	GATE(11, "gout_isppre_cmu_pclk", "dout_isppre_busp", 0x2004, 21, 0, 0),
++	GATE(12, "gout_isppre_pdp_dma", "mout_isppre_bus_user", 0x2040, 21, 0, 0),
++	GATE(13, "gout_isppre_dma_qos_aclk", "mout_isppre_bus_user", 0x2054, 21, 0, 0),
++	GATE(14, "gout_isppre_dma_qos_pclk", "dout_isppre_busp", 0x2094, 21, 0, 0),
++};
++static const struct samsung_cmu_info isppre_cmu_info __initconst = {
++	.mux_clks = isppre_mux_clks,
++	.nr_mux_clks = ARRAY_SIZE(isppre_mux_clks),
++	.div_clks = isppre_div_clks,
++	.nr_div_clks = ARRAY_SIZE(isppre_div_clks),
++	.gate_clks = isppre_gate_clks,
++	.nr_gate_clks = ARRAY_SIZE(isppre_gate_clks),
++	.nr_clk_ids = 15,
++	.clk_regs = isppre_clk_regs,
++	.nr_clk_regs = ARRAY_SIZE(isppre_clk_regs),
++	.clk_name = "bus",
++};
++
+ static int __init exynos9820_cmu_probe(struct platform_device *pdev)
+ {
+ 	const struct samsung_cmu_info *info;
+@@ -3848,6 +3892,10 @@
+ }
+ 
+ static const struct of_device_id exynos9820_cmu_of_match[] = {
++	{
++		.compatible = "samsung,exynos9820-cmu-isppre-test",
++		.data = &isppre_cmu_info,
++	},
+ 	{
+ 		.compatible = "samsung,exynos9820-cmu-fsys0",
+ 		.data = &fsys0_cmu_info,
+@@ -3894,9 +3942,14 @@
+ 	},
+ };
+ 
++static const struct dev_pm_ops exynos9820_cmu_pm_ops = {
++	RUNTIME_PM_OPS(exynos_arm64_cmu_suspend, exynos_arm64_cmu_resume, NULL)
++};
++
+ static struct platform_driver exynos9820_cmu_driver __refdata = {
+ 	.driver = {
+ 		.name = "exynos9820-cmu",
++		.pm = &exynos9820_cmu_pm_ops,
+ 		.of_match_table = exynos9820_cmu_of_match,
+ 		.suppress_bind_attrs = true,
+ 	},

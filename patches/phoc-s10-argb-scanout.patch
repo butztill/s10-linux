@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/output.c
++++ b/src/output.c
+@@ -22,12 +22,14 @@
+ #include "utils.h"
+ #include "xwayland-surface.h"
+ 
++#include <drm_fourcc.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <time.h>
+ #include <wlr/backend/drm.h>
+ #include <wlr/config.h>
+ #include <wlr/render/swapchain.h>
++#include <wlr/render/drm_format_set.h>
+ #include <wlr/types/wlr_compositor.h>
+ #include <wlr/types/wlr_gamma_control_v1.h>
+ #include <wlr/types/wlr_output_layout.h>
+@@ -868,6 +870,20 @@
+   gboolean enable = FALSE;
+ 
+   wlr_output_state_init (pending);
++  /* The S10 firmware framebuffer is AR24.  Selecting XR24 adds a CPU
++   * alpha-fill conversion on every frame.  Keep this board-specific opt-in
++   * independent of the kernel's native-only switch, so fallback stays usable.
++   */
++  if (g_strcmp0 (g_getenv ("PHOC_S10_ARGB_SCANOUT"), "1") == 0 &&
++      wlr_output_is_drm (self->wlr_output) &&
++      g_strcmp0 (self->wlr_output->name, "Unknown-1") == 0) {
++    const struct wlr_drm_format_set *formats =
++      wlr_output_get_primary_formats (self->wlr_output, WLR_BUFFER_CAP_DMABUF);
++
++    if (formats && wlr_drm_format_set_get (formats, DRM_FORMAT_ARGB8888))
++      wlr_output_state_set_render_format (pending, DRM_FORMAT_ARGB8888);
++  }
++
+   wlr_output_state_set_enabled (pending, false);
+   if (!output_config || output_config->enable) {
+     wlr_output_state_set_enabled (pending, true);

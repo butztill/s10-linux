@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=S10 camera stack (sensors, CSIS receivers, PMIC supplies)
+# Only on the camera boot entry, which has s10.camera_capture=1 on its command line
+ConditionKernelCommandLine=s10.camera_capture=1
+After=local-fs.target systemd-modules-load.service systemd-udevd.service
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=S10_CAMERA_V4L2_DIR=/home/user/s10-camera-v4l2-test
+ExecStart=/home/user/s10-camera-v4l2-test/test.sh load
+# Let the desktop's camera service (wireplumber) pick up the new cameras if the session is already running
+ExecStartPost=-/usr/bin/systemctl --machine=user@.host --user try-restart wireplumber.service
+
+[Install]
+WantedBy=multi-user.target

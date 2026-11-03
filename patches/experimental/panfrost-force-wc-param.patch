@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_gem.c
++++ b/drivers/gpu/drm/panfrost/panfrost_gem.c
+@@ -444,6 +444,11 @@
+ 	return &obj->base.base;
+ }
+ 
++/* Exynos 9820 bring-up experiment: ignore PANFROST_BO_WB_MMAP requests. */
++static bool panfrost_force_wc;
++module_param_named(force_wc, panfrost_force_wc, bool, 0644);
++MODULE_PARM_DESC(force_wc, "Map all non-coherent BOs write-combine, ignoring WB_MMAP (debug)");
++
+ static bool
+ should_map_wc(struct panfrost_gem_object *bo)
+ {
+@@ -461,7 +466,7 @@
+ 		return false;
+ 
+ 	/* Cached mappings are explicitly requested, so no write-combine. */
+-	if (bo->wb_mmap)
++	if (bo->wb_mmap && !panfrost_force_wc)
+ 		return false;
+ 
+ 	/* The default is write-combine. */

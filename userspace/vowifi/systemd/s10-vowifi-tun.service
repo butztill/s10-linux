@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=VoWiFi ePDG tunnel (SWu, IKEv2/EAP-AKA via the Shannon CP)
+After=s10-modem.service network-online.target
+Requires=s10-modem.service
+
+[Service]
+ExecStart=/bin/sh /home/user/s10-modem/vowifi/run-tun.sh
+StandardOutput=truncate:/home/user/s10-modem/vowifi/swu.log
+StandardError=inherit
+UMask=0077
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target

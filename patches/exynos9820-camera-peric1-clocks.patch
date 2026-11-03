@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clk/samsung/clk-exynos9820.c
++++ b/drivers/clk/samsung/clk-exynos9820.c
+@@ -781,21 +781,69 @@
+ /*
+  * Register offsets for CMU_PERIC1 (0x10800000)
+  */
+-#define PERIC1_CMU_PERIC1_CONTROLLER_OPTION		0x0800
+-
++#define PERIC1_CMU_PERIC1_CONTROLLER_OPTION 0x0800
++
++/* Register offsets checked against Samsung's Exynos9820 cmucal-sfr.c. */
+ static const unsigned long peric1_clk_regs[] __initconst = {
+-	PERIC1_CMU_PERIC1_CONTROLLER_OPTION,
++	0x0100, 0x0140, 0x0260, 0x0800, 0x1804, 0x1828,
++	0x203c, 0x2040, 0x20e8, 0x20ec,
++	0x0160, 0x1808, 0x2044, 0x2048,
++};
++
++PNAME(mout_peric1_bus_user_p) = { "oscclk", "dout_cmu_peric1_bus" };
++PNAME(mout_peric1_ip_user_p) = { "oscclk", "dout_cmu_peric1_ip" };
++
++static const struct samsung_mux_clock peric1_mux_clks[] __initconst = {
++	MUX(CLK_MOUT_PERIC1_BUS_USER, "mout_peric1_bus_user",
++	    mout_peric1_bus_user_p, 0x0100, 4, 1),
++	MUX(CLK_MOUT_PERIC1_USI10_USI_USER, "mout_peric1_usi10_usi_user",
++	    mout_peric1_ip_user_p, 0x0260, 4, 1),
++	MUX(CLK_MOUT_PERIC1_I2C_CAM1_USER, "mout_peric1_i2c_cam1_user",
++	    mout_peric1_ip_user_p, 0x0140, 4, 1),
++	MUX(CLK_MOUT_PERIC1_I2C_CAM2_USER, "mout_peric1_i2c_cam2_user",
++	    mout_peric1_ip_user_p, 0x0160, 4, 1),
++};
++
++static const struct samsung_div_clock peric1_div_clks[] __initconst = {
++	DIV(CLK_DOUT_PERIC1_USI10_USI, "dout_peric1_usi10_usi",
++	    "mout_peric1_usi10_usi_user", 0x1828, 0, 4),
++	DIV(CLK_DOUT_PERIC1_I2C_CAM1, "dout_peric1_i2c_cam1",
++	    "mout_peric1_i2c_cam1_user", 0x1804, 0, 4),
++	DIV(CLK_DOUT_PERIC1_I2C_CAM2, "dout_peric1_i2c_cam2",
++	    "mout_peric1_i2c_cam2_user", 0x1808, 0, 4),
++};
++
++static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
++	GATE(CLK_GOUT_PERIC1_USI10_USI_IPCLK, "gout_peric1_usi10_usi_ipclk",
++	     "dout_peric1_usi10_usi", 0x20e8, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_USI10_USI_PCLK, "gout_peric1_usi10_usi_pclk",
++	     "mout_peric1_bus_user", 0x20ec, 21, 0, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM1_IPCLK, "gout_peric1_i2c_cam1_ipclk",
++	     "dout_peric1_i2c_cam1", 0x203c, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM1_PCLK, "gout_peric1_i2c_cam1_pclk",
++	     "mout_peric1_bus_user", 0x2040, 21, 0, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM2_IPCLK, "gout_peric1_i2c_cam2_ipclk",
++	     "dout_peric1_i2c_cam2", 0x2044, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM2_PCLK, "gout_peric1_i2c_cam2_pclk",
++	     "mout_peric1_bus_user", 0x2048, 21, 0, 0),
+ };
+ 
+ static const struct samsung_cmu_info peric1_cmu_info __initconst = {
+-	.clk_regs		= peric1_clk_regs,
+-	.nr_clk_regs		= ARRAY_SIZE(peric1_clk_regs),
+-	.clk_name		= "bus",
+-	.auto_clock_gate	= true,
+-	.gate_dbg_offset	= EXYNOS9820_GATE_DBG_OFFSET,
+-	.option_offset		= PERIC1_CMU_PERIC1_CONTROLLER_OPTION,
+-	.drcg_offset		= EXYNOS9820_DRCG_EN_OFFSET,
+-	.memclk_offset		= EXYNOS9820_MEMCLK_OFFSET,
++	.mux_clks = peric1_mux_clks,
++	.nr_mux_clks = ARRAY_SIZE(peric1_mux_clks),
++	.div_clks = peric1_div_clks,
++	.nr_div_clks = ARRAY_SIZE(peric1_div_clks),
++	.gate_clks = peric1_gate_clks,
++	.nr_gate_clks = ARRAY_SIZE(peric1_gate_clks),
++	.nr_clk_ids = CLK_NR_PERIC1,
++	.clk_regs = peric1_clk_regs,
++	.nr_clk_regs = ARRAY_SIZE(peric1_clk_regs),
++	.clk_name = "bus",
++	.auto_clock_gate = true,
++	.gate_dbg_offset = EXYNOS9820_GATE_DBG_OFFSET,
++	.option_offset = PERIC1_CMU_PERIC1_CONTROLLER_OPTION,
++	.drcg_offset = EXYNOS9820_DRCG_EN_OFFSET,
++	.memclk_offset = EXYNOS9820_MEMCLK_OFFSET,
+ };
+ 
+ /*
+--- a/include/dt-bindings/clock/exynos9820.h
++++ b/include/dt-bindings/clock/exynos9820.h
+@@ -127,6 +127,22 @@
+ #define CLK_GOUT_PERIC0_USI15_USI_PCLK		89
+ #define CLK_GOUT_PERIC0_XIU_P_PERIC0_ACLK	90
+ #define CLK_NR_PERIC0				91
++
++/* CMU_PERIC1: camera PMIC control bus and ultra-wide sensor bus. */
++#define CLK_MOUT_PERIC1_BUS_USER		1
++#define CLK_MOUT_PERIC1_USI10_USI_USER		2
++#define CLK_MOUT_PERIC1_I2C_CAM1_USER		3
++#define CLK_DOUT_PERIC1_USI10_USI		4
++#define CLK_DOUT_PERIC1_I2C_CAM1		5
++#define CLK_GOUT_PERIC1_USI10_USI_IPCLK		6
++#define CLK_GOUT_PERIC1_USI10_USI_PCLK		7
++#define CLK_GOUT_PERIC1_I2C_CAM1_IPCLK		8
++#define CLK_GOUT_PERIC1_I2C_CAM1_PCLK		9
++#define CLK_MOUT_PERIC1_I2C_CAM2_USER		10
++#define CLK_DOUT_PERIC1_I2C_CAM2		11
++#define CLK_GOUT_PERIC1_I2C_CAM2_IPCLK		12
++#define CLK_GOUT_PERIC1_I2C_CAM2_PCLK		13
++#define CLK_NR_PERIC1		14
+ 
+ /* CMU_FSYS0A */
+ #define CLK_MOUT_FSYS0A_BUS_USER				1

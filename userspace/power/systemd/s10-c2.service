@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Enable CPU C2 idle (after the watchdog feeder is running)
+ConditionPathExists=/sys/bus/platform/devices/10050000.watchdog
+Requires=s10-wdt-feed.service
+After=s10-wdt-feed.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/s10-power/s10-c2-enable.sh enable
+ExecStop=/usr/local/lib/s10-power/s10-c2-enable.sh disable
+
+[Install]
+WantedBy=multi-user.target

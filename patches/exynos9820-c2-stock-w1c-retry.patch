@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/soc/samsung/exynos9820-pmu.c
++++ b/drivers/soc/samsung/exynos9820-pmu.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <linux/bits.h>
++#include <linux/delay.h>
+ #include <linux/regmap.h>
+ #include <linux/soc/samsung/exynos-pmu.h>
+ #include <linux/soc/samsung/exynos-regs-pmu.h>
+@@ -29,6 +30,36 @@
+ 	0x1044, 0x10c4, 0x1144, 0x11c4,
+ 	0x1344, 0x13c4, 0x1544, 0x15c4,
+ };
++
++/* Stock PMUCAL retries a W1C until the interrupt-pending bit is gone. */
++#define EXYNOS9820_UPEND_RETRY_US 1000
++
++static int exynos9820_clear_pending(struct exynos_pmu_context *ctx,
++				    unsigned int status_reg,
++				    unsigned int clear_reg, u32 mask)
++{
++	u32 pending;
++	unsigned int retry;
++	int ret;
++
++	for (retry = 0; retry <= EXYNOS9820_UPEND_RETRY_US; retry++) {
++		ret = regmap_read(ctx->pmuintrgen, status_reg, &pending);
++		if (ret)
++			return ret;
++		if (!(pending & mask))
++			return 0;
++
++		if (retry == EXYNOS9820_UPEND_RETRY_US)
++			break;
++
++		ret = regmap_write(ctx->pmuintrgen, clear_reg, mask);
++		if (ret)
++			return ret;
++		udelay(1);
++	}
++
++	return -ETIMEDOUT;
++}
+ 
+ static int exynos9820_cpu_pmu_regs(unsigned int cpu,
+ 				   struct exynos9820_cpu_pmu_regs *regs)
+@@ -61,7 +92,6 @@
+ static int exynos9820_cpu_pmu_restore(struct exynos_pmu_context *ctx,
+ 				      const struct exynos9820_cpu_pmu_regs *regs)
+ {
+-	u32 pending;
+ 	int ret, err;
+ 
+ 	ret = regmap_write(ctx->pmureg, regs->inform, CPU_INFORM_CLEAR);
+@@ -70,11 +100,8 @@
+ 	if (!ret)
+ 		ret = err;
+ 
+-	err = regmap_read(ctx->pmuintrgen, EXYNOS_GRP2_INTR_BID_UPEND,
+-			  &pending);
+-	if (!err)
+-		err = regmap_write(ctx->pmuintrgen, EXYNOS_GRP2_INTR_BID_CLEAR,
+-				   pending & regs->mask);
++	err = exynos9820_clear_pending(ctx, EXYNOS_GRP2_INTR_BID_UPEND,
++				       EXYNOS_GRP2_INTR_BID_CLEAR, regs->mask);
+ 	if (!ret)
+ 		ret = err;
+ 
+@@ -87,7 +114,6 @@
+ 	__must_hold(&ctx->cpupm_lock)
+ {
+ 	struct exynos9820_cpu_pmu_regs regs;
+-	u32 pending;
+ 	int ret, restore_ret;
+ 
+ 	ret = exynos9820_cpu_pmu_regs(cpu, &regs);
+@@ -101,20 +127,13 @@
+ 				 regs.mask, regs.mask);
+ 	if (ret)
+ 		goto restore;
+-	ret = regmap_read(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_UPEND,
+-			  &pending);
++	ret = exynos9820_clear_pending(ctx, EXYNOS_GRP1_INTR_BID_UPEND,
++				       EXYNOS_GRP1_INTR_BID_CLEAR, regs.mask);
+ 	if (ret)
+ 		goto restore;
+-	ret = regmap_write(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_CLEAR,
+-			   pending & regs.mask);
+-	if (ret)
+-		goto restore;
+-	ret = regmap_read(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_UPEND,
+-			  &pending);
+-	if (ret)
+-		goto restore;
+-	ret = regmap_write(ctx->pmuintrgen, EXYNOS_GRP1_INTR_BID_CLEAR,
+-			   pending & (regs.mask << 8));
++	ret = exynos9820_clear_pending(ctx, EXYNOS_GRP1_INTR_BID_UPEND,
++				       EXYNOS_GRP1_INTR_BID_CLEAR,
++				       regs.mask << 8);
+ 	if (ret)
+ 		goto restore;
+ 	ret = regmap_update_bits(ctx->pmureg, regs.int_en, BIT(3), BIT(3));

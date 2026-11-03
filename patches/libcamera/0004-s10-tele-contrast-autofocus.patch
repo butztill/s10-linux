@@ -1,0 +1,488 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/include/libcamera/internal/camera_lens.h
++++ b/include/libcamera/internal/camera_lens.h
+@@ -28,6 +28,7 @@
+ 
+ 	int init();
+ 	int setFocusPosition(int32_t position);
++	int getFocusPosition(int32_t *position);
+ 
+ 	const std::string &model() const { return model_; }
+ 
+--- a/src/libcamera/camera_lens.cpp
++++ b/src/libcamera/camera_lens.cpp
+@@ -95,6 +95,22 @@
+ 	return 0;
+ }
+ 
++/**
++ * \brief Read the current kernel lens position, in driver units
++ * \param[out] position The position returned by the lens driver
++ * \return 0 on success, or -EIO if reading the control failed
++ */
++int CameraLens::getFocusPosition(int32_t *position)
++{
++	static constexpr uint32_t ids[] = { V4L2_CID_FOCUS_ABSOLUTE };
++	ControlList values = subdev_->getControls(ids);
++	const ControlValue &value = values.get(V4L2_CID_FOCUS_ABSOLUTE);
++	if (value.isNone())
++		return -EIO;
++	*position = value.get<int32_t>();
++	return 0;
++}
++
+ int CameraLens::validateLensDriver()
+ {
+ 	int ret = 0;
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <iterator>
+ #include <list>
+ #include <map>
+@@ -29,10 +30,14 @@
+ #include <libcamera/color_space.h>
+ #include <libcamera/control_ids.h>
+ #include <libcamera/geometry.h>
++#include <libcamera/formats.h>
+ #include <libcamera/pixel_format.h>
+ #include <libcamera/stream.h>
+ 
+ #include "libcamera/internal/camera.h"
++#include "libcamera/internal/camera_lens.h"
++#include "libcamera/internal/dma_buf_allocator.h"
++#include "libcamera/internal/mapped_framebuffer.h"
+ #include "libcamera/internal/camera_manager.h"
+ #include "libcamera/internal/camera_sensor.h"
+ #include "libcamera/internal/camera_sensor_properties.h"
+@@ -47,6 +52,8 @@
+ #include "libcamera/internal/software_isp/software_isp.h"
+ #include "libcamera/internal/v4l2_subdevice.h"
+ #include "libcamera/internal/v4l2_videodevice.h"
++
++#include "s10_autofocus.h"
+ 
+ namespace libcamera {
+ 
+@@ -371,6 +378,14 @@
+ 	std::unique_ptr<Converter> converter_;
+ 	std::unique_ptr<SoftwareIsp> swIsp_;
+ 	SimpleFrames frameInfo_;
++	bool autofocusAvailable_ = false;
++	unsigned int afWidth_ = 0, afHeight_ = 0, afStride_ = 0;
++	S10Autofocus autofocus_;
++	std::map<FrameBuffer *, std::unique_ptr<MappedFrameBuffer>> afMappings_;
++	void startAutofocus(const ControlList *controls);
++	void autofocusControls(const ControlList &controls);
++	void autofocusFrame(FrameBuffer *buffer, Request *request);
++
+ 
+ private:
+ 	void tryPipeline(unsigned int code, const Size &size);
+@@ -671,6 +686,24 @@
+ 
+ 		for (PixelFormat fmt : config.outputFormats)
+ 			formats_[fmt].push_back(&config);
++	}
++
++	/* The experimental motor-code AF is specific to the verified S10 tele.
++	 * Do not claim LensPosition (dioptres) without optical calibration. */
++	CameraLens *lens = sensor_->focusLens();
++	if (sensor_->model() == "s5k3m3" && lens && lens->model() == "ak7374") {
++		const auto &range = lens->controls().at(V4L2_CID_FOCUS_ABSOLUTE);
++		if (range.min().get<int32_t>() == 0 && range.max().get<int32_t>() == 511) {
++			autofocusAvailable_ = true;
++			ControlInfoMap::Map ctrls(controlInfo_.begin(), controlInfo_.end());
++			ctrls[&controls::AfMode] = ControlInfo(0, 2, 2);
++			ctrls[&controls::AfTrigger] = ControlInfo(0, 1);
++			ctrls[&controls::AfPause] = ControlInfo(0, 2);
++			ctrls[&controls::AfState] = ControlInfo(0, 3);
++			ctrls[&controls::AfPauseState] = ControlInfo(0, 2);
++			controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
++			LOG(SimplePipeline, Info) << "S10 tele contrast autofocus available";
++		}
+ 	}
+ 
+ 	properties_ = sensor_->properties();
+@@ -886,6 +919,73 @@
+ 	return 0;
+ }
+ 
++static uint64_t autofocusTime()
++{
++	return std::chrono::duration_cast<std::chrono::nanoseconds>(
++		std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++void SimpleCameraData::autofocusControls(const ControlList &ctrls)
++{
++	if (auto mode = ctrls.get(controls::AfMode); mode && *mode >= 0 && *mode <= 2)
++		autofocus_.setMode(static_cast<S10Autofocus::Mode>(*mode), autofocusTime());
++	if (auto trigger = ctrls.get(controls::AfTrigger))
++		autofocus_.trigger(*trigger == controls::AfTriggerCancel, autofocusTime());
++	if (auto pause = ctrls.get(controls::AfPause); pause && *pause >= 0 && *pause <= 2)
++		autofocus_.pause(*pause, autofocusTime());
++}
++
++void SimpleCameraData::startAutofocus(const ControlList *ctrls)
++{
++	if (!autofocusAvailable_ || !afWidth_)
++		return;
++	int32_t position;
++	if (sensor_->focusLens()->getFocusPosition(&position)) {
++		LOG(SimplePipeline, Warning) << "Cannot read focus; disabling AF for this stream";
++		afWidth_ = 0;
++		return;
++	}
++	autofocus_.reset(position, S10Autofocus::Continuous, autofocusTime());
++	if (ctrls)
++		autofocusControls(*ctrls);
++}
++
++void SimpleCameraData::autofocusFrame(FrameBuffer *buffer, Request *request)
++{
++	if (!autofocusAvailable_ || !afWidth_ || !request)
++		return;
++	autofocusControls(request->controls());
++	auto previousState = autofocus_.state();
++	if (autofocus_.mode() != S10Autofocus::Manual && autofocus_.pauseState() != 2) {
++		auto &mapped = afMappings_[buffer];
++		if (!mapped)
++			mapped = std::make_unique<MappedFrameBuffer>(buffer, MappedFrameBuffer::MapFlag::Read);
++		S10Autofocus::Measure measure;
++		if (mapped->isValid() && mapped->planes().size() == 1 &&
++		    buffer->metadata().planes().size() == 1) {
++			DmaSyncer sync(buffer->planes()[0].fd, DmaSyncer::SyncType::Read);
++			const auto &plane = mapped->planes()[0];
++			size_t length = std::min<size_t>(plane.size(), buffer->metadata().planes()[0].bytesused);
++			measure = S10Autofocus::measure(plane.data(), length,
++						      afWidth_, afHeight_, afStride_);
++		}
++		autofocus_.update(measure, autofocusTime(), [this](int position) {
++			int ret = sensor_->focusLens()->setFocusPosition(position);
++			LOG(SimplePipeline, Debug) << "S10 AF move " << position << " result " << ret;
++			return ret;
++		});
++	}
++	if (previousState != autofocus_.state()) {
++		LOG(SimplePipeline, Info) << "S10 AF state " << autofocus_.state()
++			<< " motor " << autofocus_.position();
++		for (const auto &[position, score] : autofocus_.scores())
++			LOG(SimplePipeline, Debug) << "S10 AF sample " << position << " contrast " << score;
++	}
++	request->_d()->metadata().set(controls::AfMode, static_cast<int32_t>(autofocus_.mode()));
++	request->_d()->metadata().set(controls::AfState, static_cast<int32_t>(autofocus_.state()));
++	request->_d()->metadata().set(controls::AfPauseState, autofocus_.pauseState());
++}
++
+ void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
+ {
+ 	SimplePipelineHandler *pipe = SimpleCameraData::pipe();
+@@ -953,6 +1053,8 @@
+ 	if (request)
+ 		request->_d()->metadata().set(controls::SensorTimestamp,
+ 					      buffer->metadata().timestamp);
++
++	autofocusFrame(buffer, request);
+ 
+ 	/*
+ 	 * Queue the captured and the request buffer to the converter or Software
+@@ -1589,6 +1691,14 @@
+ 			<< ", got " << captureFormat.planes[0].bpl;
+ 	}
+ 
++	data->afMappings_.clear();
++	data->afWidth_ = 0;
++	if (data->autofocusAvailable_ && videoFormat.toPixelFormat() == formats::SGRBG10) {
++		data->afWidth_ = captureFormat.size.width;
++		data->afHeight_ = captureFormat.size.height;
++		data->afStride_ = captureFormat.planes[0].bpl;
++	}
++
+ 	/* Configure the converter if needed. */
+ 	std::vector<std::reference_wrapper<const StreamConfiguration>> outputCfgs;
+ 	data->useConversion_ = config->needConversion();
+@@ -1643,7 +1753,7 @@
+ 		return data->video_->exportBuffers(count, buffers);
+ }
+ 
+-int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlList *controls)
++int SimplePipelineHandler::start(Camera *camera, const ControlList *controls)
+ {
+ 	SimpleCameraData *data = cameraData(camera);
+ 	V4L2VideoDevice *video = data->video_;
+@@ -1697,6 +1807,8 @@
+ 		return ret;
+ 	}
+ 
++	data->startAutofocus(controls);
++
+ 	if (data->useConversion_) {
+ 		if (data->converter_)
+ 			ret = data->converter_->start();
+@@ -1756,6 +1868,7 @@
+ 		if (!cancelled.count(request))
+ 			cancelRequest(request);
+ 	}
++	data->afMappings_.clear();
+ 	data->conversionBuffers_.clear();
+ 
+ 	releasePipeline(data);
+--- /dev/null
++++ b/src/libcamera/pipeline/simple/s10_autofocus.h
+@@ -0,0 +1,249 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <functional>
++#include <limits>
++#include <map>
++#include <vector>
++
++namespace libcamera {
++
++/* Experimental, uncalibrated S5K3M3/AK7374 contrast AF. Positions are motor
++ * codes, never dioptres. Keep the controller independent of capture/IPC. */
++class S10Autofocus
++{
++public:
++	enum Mode { Manual, Auto, Continuous };
++	enum State { Idle, Scanning, Focused, Failed };
++	struct Measure { double contrast = 0; double mean = 0; bool valid = false; };
++	using Move = std::function<int(int)>;
++
++	/* GRBG10 unpacked in little-endian 16-bit words. Sample only one green
++	 * phase in a central ROI, excluding black/saturated scenes. Normalizing
++	 * by mean signal squared reduces sensitivity to exposure changes. */
++	static Measure measure(const uint8_t *data, size_t length,
++			       unsigned int width, unsigned int height, unsigned int stride)
++	{
++		if (!data || width < 32 || height < 32 || stride < width * 2 ||
++		    length < size_t(height - 1) * stride + width * 2)
++			return {};
++		auto pixel = [&](unsigned int x, unsigned int y) {
++			const uint8_t *p = data + size_t(y) * stride + x * 2;
++			return int(p[0] | (p[1] << 8));
++		};
++		unsigned int roi = std::min({ 512U, width / 2, height / 2 }) & ~1U;
++		unsigned int x0 = ((width - roi) / 2) & ~1U;
++		unsigned int y0 = ((height - roi) / 2) & ~1U;
++		double energy = 0, signal = 0;
++		unsigned int count = 0, saturated = 0;
++		for (unsigned int y = y0; y < y0 + roi; y += 4) {
++			for (unsigned int x = x0; x < x0 + roi; x += 4) {
++				int c = pixel(x, y);
++				saturated += c >= 1000;
++				signal += std::max(c - 64, 0);
++				int dx = pixel(x + 2, y) - pixel(x - 2, y);
++				int dy = pixel(x, y + 2) - pixel(x, y - 2);
++				energy += double(dx) * dx + double(dy) * dy;
++				++count;
++			}
++		}
++		double mean = signal / count;
++		return { energy / (2 * count * std::max(mean * mean, 1.0)), mean,
++			 mean >= 12 && saturated < count / 5 };
++	}
++
++	void reset(int position, Mode mode, uint64_t now)
++	{
++		*this = S10Autofocus();
++		position_ = std::clamp(position, 0, 511);
++		mode_ = mode;
++		if (mode == Continuous)
++			begin(now);
++	}
++
++	void setMode(Mode mode, uint64_t now)
++	{
++		if (mode == mode_)
++			return;
++		mode_ = mode;
++		state_ = Idle;
++		paused_ = deferred_ = false;
++		if (mode == Continuous)
++			begin(now);
++	}
++
++	void trigger(bool cancel, uint64_t now)
++	{
++		if (mode_ != Auto)
++			return;
++		if (cancel) {
++			state_ = Idle; /* Cancellation holds the current position. */
++		} else if (state_ != Scanning) {
++			begin(now);
++		}
++	}
++
++	void pause(int value, uint64_t now)
++	{
++		if (mode_ != Continuous)
++			return;
++		if (value == 2) {
++			if (paused_ && state_ == Scanning) {
++				deadline_ = now + kTimeout;
++				skip_ = 4;
++				samples_.clear();
++			}
++			paused_ = deferred_ = false;
++		} else if (value == 1 && state_ == Scanning) {
++			deferred_ = true;
++		} else {
++			paused_ = true;
++			deferred_ = false;
++		}
++	}
++
++	void update(Measure m, uint64_t now, const Move &move)
++	{
++		if (mode_ == Manual || paused_)
++			return;
++		if (state_ != Scanning) {
++			if (mode_ != Continuous || now < cooldown_)
++				return;
++			bool changed = state_ == Failed ? m.valid :
++				!m.valid || m.contrast < locked_ * 0.65 ||
++				m.mean < lockedMean_ * 0.65 || m.mean > lockedMean_ * 1.5;
++			changed_ = changed ? changed_ + 1 : 0;
++			if (changed_ >= 8)
++				begin(now);
++			return;
++		}
++		if (now >= deadline_) {
++			finish(false, now, move);
++			return;
++		}
++		if (skip_) {
++			--skip_;
++			return;
++		}
++		if (!m.valid || !std::isfinite(m.contrast)) {
++			if (++invalid_ >= 8)
++				finish(false, now, move);
++			return;
++		}
++		invalid_ = 0;
++		samples_.push_back(m.contrast);
++		if (samples_.size() < 3)
++			return;
++		std::sort(samples_.begin(), samples_.end());
++		double score = samples_[1];
++		samples_.clear();
++		if (phase_ == Warmup) {
++			points_.clear();
++			for (int p = 0; p < 511; p += 64)
++				points_.push_back(p);
++			points_.push_back(511);
++			phase_ = Coarse;
++			index_ = 0;
++			advance(points_[0], now, move);
++			return;
++		}
++		if (phase_ == Verify) {
++			locked_ = score;
++			lockedMean_ = m.mean;
++			double worst = std::numeric_limits<double>::max();
++			for (auto [pos, value] : scores_)
++				worst = std::min(worst, value);
++			bool ok = score > 0.0001 && score >= bestScore_ * 0.7 &&
++				bestScore_ > worst * 1.15;
++			finish(ok, now, move);
++			return;
++		}
++		scores_[position_] = score;
++		if (++index_ < points_.size()) {
++			advance(points_[index_], now, move);
++			return;
++		}
++		auto best = std::max_element(scores_.begin(), scores_.end(),
++			[](const auto &a, const auto &b) { return a.second < b.second; });
++		bestPosition_ = best->first;
++		bestScore_ = best->second;
++		if (phase_ == Coarse) {
++			points_.clear();
++			for (int p = std::max(0, bestPosition_ - 48);
++			     p <= std::min(511, bestPosition_ + 48); p += 16) {
++				if (!scores_.count(p))
++					points_.push_back(p);
++			}
++			phase_ = Fine;
++			index_ = 0;
++			if (!points_.empty()) {
++				advance(points_[0], now, move);
++				return;
++			}
++		}
++		phase_ = Verify;
++		advance(bestPosition_, now, move);
++	}
++
++	Mode mode() const { return mode_; }
++	State state() const { return state_; }
++	int pauseState() const { return paused_ ? 2 : deferred_ ? 1 : 0; }
++	int position() const { return position_; }
++	const std::map<int, double> &scores() const { return scores_; }
++
++private:
++	static constexpr uint64_t kTimeout = 30000000000ULL;
++	enum Phase { Warmup, Coarse, Fine, Verify };
++	void begin(uint64_t now)
++	{
++		state_ = Scanning;
++		phase_ = Warmup;
++		origin_ = position_;
++		deadline_ = now + kTimeout;
++		skip_ = 12; /* Allow AGC to settle before comparing lens positions. */
++		invalid_ = changed_ = 0;
++		points_.clear();
++		samples_.clear();
++		scores_.clear();
++	}
++	void advance(int position, uint64_t now, const Move &move)
++	{
++		if (move(position)) {
++			finish(false, now, move);
++			return;
++		}
++		position_ = position;
++		skip_ = 4; /* Discard captured/in-flight frames and motor settling. */
++		samples_.clear();
++	}
++	void finish(bool success, uint64_t now, const Move &move)
++	{
++		if (!success && position_ != origin_ && !move(origin_))
++			position_ = origin_;
++		state_ = success ? Focused : Failed;
++		cooldown_ = now + (success ? 5000000000ULL : 15000000000ULL);
++		changed_ = 0;
++		if (deferred_) {
++			paused_ = true;
++			deferred_ = false;
++		}
++	}
++	Mode mode_ = Manual;
++	State state_ = Idle;
++	Phase phase_ = Warmup;
++	int position_ = 120, origin_ = 120, bestPosition_ = 120;
++	unsigned int skip_ = 0, invalid_ = 0, changed_ = 0;
++	size_t index_ = 0;
++	uint64_t deadline_ = 0, cooldown_ = 0;
++	double bestScore_ = 0, locked_ = 0, lockedMean_ = 0;
++	bool paused_ = false, deferred_ = false;
++	std::vector<int> points_;
++	std::vector<double> samples_;
++	std::map<int, double> scores_;
++};
++
++} /* namespace libcamera */

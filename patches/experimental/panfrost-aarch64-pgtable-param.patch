@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_mmu.c
++++ b/drivers/gpu/drm/panfrost/panfrost_mmu.c
+@@ -13,6 +13,7 @@
+ #include <linux/iopoll.h>
+ #include <linux/io-pgtable.h>
+ #include <linux/iommu.h>
++#include <linux/module.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/shmem_fs.h>
+@@ -775,6 +776,10 @@
+ 	}
+ }
+ 
++static bool panfrost_force_aarch64;
++module_param_named(force_aarch64, panfrost_force_aarch64, bool, 0400);
++MODULE_PARM_DESC(force_aarch64, "Use supported AArch64 page tables (diagnostic)");
++
+ struct panfrost_mmu *panfrost_mmu_ctx_create(struct panfrost_device *pfdev)
+ {
+ 	u32 va_bits = GPU_MMU_FEATURES_VA_BITS(pfdev->features.mmu_features);
+@@ -783,7 +788,8 @@
+ 	enum io_pgtable_fmt fmt;
+ 	int ret;
+ 
+-	if (pfdev->comp->gpu_quirks & BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE)) {
++	if (panfrost_force_aarch64 ||
++	    pfdev->comp->gpu_quirks & BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE)) {
+ 		if (!panfrost_has_hw_feature(pfdev, HW_FEATURE_AARCH64_MMU)) {
+ 			dev_err_once(pfdev->base.dev,
+ 				     "AARCH64_4K page table not supported\n");

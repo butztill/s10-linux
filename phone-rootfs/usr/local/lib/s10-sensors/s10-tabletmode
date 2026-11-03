@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+# Virtual SW_TABLET_MODE=1 switch so GNOME/mutter enables accelerometer auto-rotate on the phone.
+import os, fcntl, struct, time, signal
+fd = os.open('/dev/uinput', os.O_WRONLY)
+fcntl.ioctl(fd, 0x40045564, 5)    # EV_SW
+fcntl.ioctl(fd, 0x4004556d, 1)    # SW_TABLET_MODE
+fcntl.ioctl(fd, 0x40045564, 0)    # EV_SYN
+setup = struct.pack('HHHH80sI', 0x06, 0x1, 0x1, 1, b'S10 tablet mode switch', 0)
+fcntl.ioctl(fd, 0x405c5503, setup)
+fcntl.ioctl(fd, 0x5501)
+time.sleep(1)
+def ev(t, c, v): os.write(fd, struct.pack('llHHi', 0, 0, t, c, v))
+ev(5, 1, 1); ev(0, 0, 0)
+signal.pause()

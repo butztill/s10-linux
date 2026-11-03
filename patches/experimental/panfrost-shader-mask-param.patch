@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_job.c
++++ b/drivers/gpu/drm/panfrost/panfrost_job.c
+@@ -135,6 +135,10 @@
+ 	return 1;
+ }
+ 
++static unsigned long long panfrost_shader_mask;
++module_param_named(shader_mask, panfrost_shader_mask, ullong, 0644);
++MODULE_PARM_DESC(shader_mask, "Restrict jobs to available shader cores; 0=all (diagnostic)");
++
+ static void panfrost_job_write_affinity(struct panfrost_device *pfdev,
+ 					u32 requirements,
+ 					int js)
+@@ -147,6 +151,8 @@
+ 	 * multiple (2) coherent core groups
+ 	 */
+ 	affinity = pfdev->features.shader_present;
++	if (panfrost_shader_mask & affinity)
++		affinity &= panfrost_shader_mask;
+ 
+ 	job_write(pfdev, JS_AFFINITY_NEXT_LO(js), lower_32_bits(affinity));
+ 	job_write(pfdev, JS_AFFINITY_NEXT_HI(js), upper_32_bits(affinity));

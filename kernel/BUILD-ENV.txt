@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Toolchain/host for the reproducible build (kernel/EXPECTED.sha256 was produced with exactly this)
+date: 2026-10-28
+os: Arch Linux kernel 7.2.11-arch1-1
+clang version 23.1.3
+LLD 23.1.3 (compatible with GNU linkers)
+GNU Make 4.4.1
+Version: DTC v1.8.1
+bc 1.08.2
+flex 2.6.4
+bison (GNU Bison) 3.8.2
+OpenSSL 3.6.5 29 Sep 2026 (Library: OpenSSL 3.6.5 29 Sep 2026)
+rsync  version 3.5.1-g04355d27  protocol version 33
+Python 3.14.8
+tar (GNU tar) 1.35
+gzip 1.15
+git version 2.56.0

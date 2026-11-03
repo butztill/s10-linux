@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -53,6 +53,7 @@
+ 
+ 	struct {
+ 		RGB<float> gains;
++		bool enabled = true;
+ 		unsigned int temperatureK;
+ 	} awb;
+ 
+@@ -75,6 +76,7 @@
+ 	} sensor;
+ 
+ 	RGB<float> gains;
++	bool awbEnabled = true;
+ 
+ 	float gamma;
+ 	std::optional<float> contrast;
+--- a/src/ipa/simple/algorithms/awb.h
++++ b/src/ipa/simple/algorithms/awb.h
+@@ -20,6 +20,8 @@
+ 	~Awb() = default;
+ 
+ 	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void queueRequest(IPAContext &context, const uint32_t frame,
++			  IPAFrameContext &frameContext, const ControlList &controls) override;
+ 	void prepare(IPAContext &context,
+ 		     const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+--- a/src/ipa/simple/algorithms/awb.cpp
++++ b/src/ipa/simple/algorithms/awb.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "awb.h"
+ 
++#include <algorithm>
++#include <cmath>
+ #include <numeric>
+ #include <stdint.h>
+ 
+@@ -26,10 +28,29 @@
+ int Awb::configure(IPAContext &context,
+ 		   [[maybe_unused]] const IPAConfigInfo &configInfo)
+ {
++	context.activeState.awb.enabled = true;
+ 	auto &gains = context.activeState.awb.gains;
+ 	gains = { { 1.0, 1.0, 1.0 } };
+ 
+ 	return 0;
++}
++
++void Awb::queueRequest(IPAContext &context,
++                       [[maybe_unused]] const uint32_t frame,
++                       IPAFrameContext &frameContext, const ControlList &controls)
++{
++	auto &awb = context.activeState.awb;
++	if (const auto enabled = controls.get(controls::AwbEnable))
++		awb.enabled = *enabled;
++	if (!awb.enabled) {
++		if (const auto gains = controls.get(controls::ColourGains)) {
++			if (std::isfinite((*gains)[0]) && std::isfinite((*gains)[1]))
++				awb.gains = {{ std::clamp((*gains)[0], 0.25f, 4.0f), 1.0f,
++				               std::clamp((*gains)[1], 0.25f, 4.0f) }};
++		}
++	}
++	frameContext.awbEnabled = awb.enabled;
++	frameContext.gains = awb.gains;
+ }
+ 
+ void Awb::prepare(IPAContext &context,
+@@ -37,10 +58,10 @@
+ 		  IPAFrameContext &frameContext,
+ 		  DebayerParams *params)
+ {
+-	auto &gains = context.activeState.awb.gains;
+-
+-	frameContext.gains = gains;
+-	params->gains = gains;
++	/* Automatic gains follow statistics; manual gains belong to this request. */
++	if (frameContext.awbEnabled)
++		frameContext.gains = context.activeState.awb.gains;
++	params->gains = frameContext.gains;
+ }
+ 
+ void Awb::process(IPAContext &context,
+@@ -55,7 +76,8 @@
+ 	metadata.set(controls::ColourGains, { frameContext.gains.r(),
+ 					      frameContext.gains.b() });
+ 
+-	if (!stats->valid)
++	metadata.set(controls::AwbEnable, frameContext.awbEnabled);
++	if (!frameContext.awbEnabled || !context.activeState.awb.enabled || !stats->valid)
+ 		return;
+ 
+ 	/*
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -159,6 +159,8 @@
+ 		const float gainMax = std::max(gainMin, static_cast<float>(gainValue(gainInfo.max().get<int32_t>())));
+ 		const float gainDefault = std::clamp(static_cast<float>(gainValue(gainInfo.def().get<int32_t>())), gainMin, gainMax);
+ 
++		context_.ctrlMap[&controls::AwbEnable] = ControlInfo(false, true, true);
++		context_.ctrlMap[&controls::ColourGains] = ControlInfo(0.25f, 4.0f, 1.0f);
+ 		context_.ctrlMap[&controls::AeEnable] = ControlInfo(false, true, true);
+ 		context_.ctrlMap[&controls::ExposureValue] = ControlInfo(-2.0f, 2.0f, 0.0f);
+ 		context_.ctrlMap[&controls::ExposureTimeMode] = ControlInfo(0, 1, 0);
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -689,10 +689,11 @@
+ 			formats_[fmt].push_back(&config);
+ 	}
+ 
+-	/* The experimental motor-code AF is specific to S10 tele/front AK7374 lenses.
++	/* The experimental motor-code AF is specific to S10 AK7374 lenses.
+ 	 * Do not claim LensPosition (dioptres) without optical calibration. */
+ 	CameraLens *lens = sensor_->focusLens();
+-	if ((sensor_->model() == "s5k3m3" || sensor_->model() == "s5k3j1") &&
++	if ((sensor_->model() == "s5k3m3" || sensor_->model() == "s5k3j1" ||
++	     sensor_->model() == "s5k2l4") &&
+ 	    lens && lens->model() == "ak7374") {
+ 		const auto &range = lens->controls().at(V4L2_CID_FOCUS_ABSOLUTE);
+ 		if (range.min().get<int32_t>() == 0 && range.max().get<int32_t>() == 511) {

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Public source series; proprietary-reference color patches and their dependent
+# exposure patch are deliberately absent. See docs/public/PROVENANCE.md.
+patches/libcamera/0001-s10-exynos9820-csis-and-s5k3p9.patch
+patches/libcamera/0002-s10-s5k3m3-s5k3j1-helpers.patch
+patches/libcamera/0003-simple-cancel-requests-waiting-for-metadata-on-stop.patch
+patches/libcamera/0004-s10-tele-contrast-autofocus.patch
+patches/libcamera/0005-software-isp-cancel-stale-worker-jobs.patch
+patches/libcamera/0006-s10-full-field-preview.patch
+patches/libcamera/0007-s10-front-autofocus.patch
+patches/libcamera/0008-s10-cache-dma-rows-before-resize.patch
+patches/libcamera/0009-s10-s5k2l4-helper.patch
+patches/libcamera/0010-s10-autofocus-gbrg.patch
+patches/libcamera/0011-s10-camera-controls.patch
+patches/libcamera/0012-s10-camera-controls-followup.patch
+patches/libcamera/0013-s10-white-balance-and-main-focus.patch
+patches/libcamera/0017-s10-bayer-resize-average.patch

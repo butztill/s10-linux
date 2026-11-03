@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Restore Galaxy S10 touchscreen after early probe failure
+ConditionPathExists=/sys/bus/i2c/drivers/s6sy761/bind
+After=systemd-udev-trigger.service
+Before=plasma-mobile.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/restore-s10-touch
+RemainAfterExit=yes
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target

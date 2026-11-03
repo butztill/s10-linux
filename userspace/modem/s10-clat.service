@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=S10 IPv4 over the IPv6 cellular bearer (DNS64/464XLAT)
+After=NetworkManager.service
+BindsTo=sys-subsystem-net-devices-rmnet0.device
+
+[Service]
+Type=exec
+RuntimeDirectory=s10-clat
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/sbin/start-s10-clat
+Restart=on-failure
+RestartSec=8
+TimeoutStopSec=15

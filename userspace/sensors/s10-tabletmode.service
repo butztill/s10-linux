@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Virtual tablet-mode switch (enables GNOME auto-rotate)
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/s10-sensors/s10-tabletmode
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/s10-kernel/src/include/linux/psci.h
++++ b/s10-kernel/src/include/linux/psci.h
+@@ -20,6 +20,19 @@
+ bool psci_power_state_is_valid(u32 state);
+ int psci_set_osi_mode(bool enable);
+ bool psci_has_osi_support(void);
++
++/* Most recent CPU_SUSPEND firmware call on a specified CPU. */
++struct psci_cpu_suspend_result {
++	s32 firmware_result;
++	u32 function_id;
++	u32 power_state;
++	unsigned long entry_point;
++	u64 calls;
++};
++
++void psci_get_cpu_suspend_result(unsigned int cpu,
++				 struct psci_cpu_suspend_result *result);
++u64 psci_cpu_suspend_call_count(unsigned int cpu);
+ 
+ struct psci_operations {
+ 	u32 (*get_version)(void);
+--- a/s10-kernel/src/drivers/firmware/psci/psci.c
++++ b/s10-kernel/src/drivers/firmware/psci/psci.c
+@@ -13,6 +13,7 @@
+ #include <linux/errno.h>
+ #include <linux/linkage.h>
+ #include <linux/of.h>
++#include <linux/percpu.h>
+ #include <linux/pm.h>
+ #include <linux/printk.h>
+ #include <linux/psci.h>
+@@ -61,6 +62,28 @@
+ static psci_fn *invoke_psci_fn;
+ 
+ static struct psci_0_1_function_ids psci_0_1_function_ids;
++static DEFINE_PER_CPU(struct psci_cpu_suspend_result, psci_cpu_suspend_result);
++
++void psci_get_cpu_suspend_result(unsigned int cpu,
++				 struct psci_cpu_suspend_result *result)
++{
++	struct psci_cpu_suspend_result *last =
++		per_cpu_ptr(&psci_cpu_suspend_result, cpu);
++
++	result->firmware_result = READ_ONCE(last->firmware_result);
++	result->function_id = READ_ONCE(last->function_id);
++	result->power_state = READ_ONCE(last->power_state);
++	result->entry_point = READ_ONCE(last->entry_point);
++	result->calls = READ_ONCE(last->calls);
++}
++
++u64 psci_cpu_suspend_call_count(unsigned int cpu)
++{
++	struct psci_cpu_suspend_result *last =
++		per_cpu_ptr(&psci_cpu_suspend_result, cpu);
++
++	return READ_ONCE(last->calls);
++}
+ 
+ struct psci_0_1_function_ids get_psci_0_1_function_ids(void)
+ {
+@@ -176,10 +199,20 @@
+ static __always_inline int
+ __psci_cpu_suspend(u32 fn, u32 state, unsigned long entry_point)
+ {
+-	int err;
+-
+-	err = invoke_psci_fn(fn, state, entry_point, 0);
+-	return psci_to_linux_errno(err);
++	u32 fw_result;
++
++	fw_result = invoke_psci_fn(fn, state, entry_point, 0);
++	{
++		struct psci_cpu_suspend_result *last =
++			this_cpu_ptr(&psci_cpu_suspend_result);
++
++		WRITE_ONCE(last->firmware_result, (s32)fw_result);
++		WRITE_ONCE(last->function_id, fn);
++		WRITE_ONCE(last->power_state, state);
++		WRITE_ONCE(last->entry_point, entry_point);
++		WRITE_ONCE(last->calls, READ_ONCE(last->calls) + 1);
++	}
++	return psci_to_linux_errno((s32)fw_result);
+ }
+ 
+ static __always_inline int
+--- a/s10-kernel/src/drivers/cpuidle/cpuidle-psci.c
++++ b/s10-kernel/src/drivers/cpuidle/cpuidle-psci.c
+@@ -59,6 +59,12 @@
+ 	u64 psci_einval;
+ 	int last_pm_error;
+ 	int last_psci_error;
++	s32 last_psci_firmware_result;
++	u32 last_psci_function_id;
++	u32 last_psci_power_state;
++	unsigned long last_psci_entry_point;
++	u64 last_psci_firmware_calls;
++	bool last_psci_firmware_call;
+ };
+ 
+ static DEFINE_PER_CPU(struct psci_idle_results, psci_idle_results);
+@@ -67,16 +73,25 @@
+ {
+ 	int cpu;
+ 
+-	seq_puts(s, "cpu attempts pm_failures psci_success psci_failures psci_einval last_pm_error last_psci_error\n");
++	seq_puts(s, "cpu attempts pm_failures psci_success psci_failures psci_einval "
++		 "last_pm_error last_psci_error firmware_result function_id "
++		 "power_state entry_point firmware_calls firmware_called\n");
+ 	for_each_possible_cpu(cpu) {
+ 		struct psci_idle_results *r = per_cpu_ptr(&psci_idle_results, cpu);
+ 
+ 		/* Per-field snapshots, not a coherent cross-CPU measurement. */
+-		seq_printf(s, "%d %llu %llu %llu %llu %llu %d %d\n", cpu,
++		seq_printf(s, "%d %llu %llu %llu %llu %llu %d %d %d %#x %#x %#lx %llu %u\n",
++			   cpu,
+ 			   READ_ONCE(r->attempts), READ_ONCE(r->pm_failures),
+ 			   READ_ONCE(r->psci_success), READ_ONCE(r->psci_failures),
+ 			   READ_ONCE(r->psci_einval), READ_ONCE(r->last_pm_error),
+-			   READ_ONCE(r->last_psci_error));
++			   READ_ONCE(r->last_psci_error),
++			   READ_ONCE(r->last_psci_firmware_result),
++			   READ_ONCE(r->last_psci_function_id),
++			   READ_ONCE(r->last_psci_power_state),
++			   READ_ONCE(r->last_psci_entry_point),
++			   READ_ONCE(r->last_psci_firmware_calls),
++			   READ_ONCE(r->last_psci_firmware_call));
+ 	}
+ 	return 0;
+ }
+@@ -257,6 +272,7 @@
+ 	u32 *state = __this_cpu_read(psci_cpuidle_data.psci_states);
+ 	struct psci_idle_results *r;
+ 	bool trace = false;
++	u64 fw_calls_before = 0;
+ 	int pm_ret = 0, psci_ret = 0, ret;
+ 
+ 	if (!idx || !unlikely(READ_ONCE(psci_cpuidle_entry_trace)))
+@@ -275,13 +291,24 @@
+ 	/* Mirror the RCU variant of the macro so the diagnostic keeps raw errors. */
+ 	pm_ret = cpu_pm_enter();
+ 	if (!pm_ret) {
++		fw_calls_before = psci_cpu_suspend_call_count(dev->cpu);
+ 		psci_ret = psci_cpu_suspend_enter(state[idx]);
+ 		cpu_pm_exit();
+ 		if (psci_ret) {
++			struct psci_cpu_suspend_result fw_result;
++
+ 			r->last_psci_error = psci_ret;
+ 			r->psci_failures++;
+ 			if (psci_ret == -EINVAL)
+ 				r->psci_einval++;
++			psci_get_cpu_suspend_result(dev->cpu, &fw_result);
++			r->last_psci_firmware_result = fw_result.firmware_result;
++			r->last_psci_function_id = fw_result.function_id;
++			r->last_psci_power_state = fw_result.power_state;
++			r->last_psci_entry_point = fw_result.entry_point;
++			r->last_psci_firmware_calls = fw_result.calls;
++			r->last_psci_firmware_call =
++				fw_result.calls != fw_calls_before;
+ 		} else {
+ 			r->psci_success++;
+ 		}

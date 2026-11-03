@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_mmu.c
++++ b/drivers/gpu/drm/panfrost/panfrost_mmu.c
+@@ -970,6 +970,11 @@
+ 		return err;
+ 	}
+ 
++	/* Initialise fault interrupts before the first job, even when the
++	 * device never enters runtime suspend/resume after probe.
++	 */
++	panfrost_mmu_reset(pfdev);
++
+ 	return 0;
+ }
+ 

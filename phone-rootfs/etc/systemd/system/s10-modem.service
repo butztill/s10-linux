@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Galaxy S10 Shannon modem: CP boot, RFS/IPC daemon and AT bridge
+# create /home/user/s10-modem/DISABLE to skip the modem at boot
+After=local-fs.target systemd-udevd.service
+Before=ModemManager.service
+
+[Service]
+Type=simple
+ExecStart=/home/user/s10-modem/boot-link.sh
+ExecStopPost=/bin/sh -c 'true'
+Restart=no
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

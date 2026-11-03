@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Galaxy S10 sensor hub daemon (net.hadess.SensorProxy)
+Conflicts=iio-sensor-proxy.service
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=net.hadess.SensorProxy
+ExecStart=/usr/bin/python3 /usr/local/lib/s10-sensors/s10-sensord
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+Alias=iio-sensor-proxy.service

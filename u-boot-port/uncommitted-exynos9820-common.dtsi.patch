@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+diff --git a/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi b/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
+index 2fef85232b6..ee755e620b8 100644
+--- a/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
++++ b/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
+@@ -273,6 +273,13 @@
+ 	status = "okay";
+ };
+ 
++/* The unused voice-trigger controller is in the powered-off VTS domain.
++ * Register access in late suspend faults until its power management exists.
++ */
++&pinctrl_vts {
++	status = "disabled";
++};
++
+ &serial0 {
+ 	status = "okay";
+ };

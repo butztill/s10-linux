@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Shannon raw-IP ports. Limit the S10 plugin to this platform device.
+ACTION!="add|change|move|bind", GOTO="s10_modem_end"
+SUBSYSTEM=="tty", DEVPATH=="*/platform/s10-modem/*", KERNEL=="ttyCP0", ENV{ID_MM_DEVICE_PROCESS}="1", ENV{ID_MM_PHYSDEV_UID}="s10-modem", ENV{ID_MM_PORT_TYPE_AT_PRIMARY}="1", ENV{ID_MM_S10_SHANNON}="1"
+# No daemon serves the second AT channel; probing it blocks close for ~30 s.
+SUBSYSTEM=="tty", DEVPATH=="*/platform/s10-modem/*", KERNEL=="ttyCP1", ENV{ID_MM_PORT_IGNORE}="1"
+SUBSYSTEM=="net", DEVPATH=="*/platform/s10-modem/*", ENV{ID_MM_DEVICE_PROCESS}="1", ENV{ID_MM_PHYSDEV_UID}="s10-modem", ENV{ID_MM_S10_SHANNON}="1"
+LABEL="s10_modem_end"

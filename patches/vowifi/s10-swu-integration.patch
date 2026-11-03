@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: GPL-3.0-only
+--- a/swu_emulator.py
++++ b/swu_emulator.py
+@@ -1,4 +1,11 @@
+-import serial
++# SPDX-License-Identifier: GPL-3.0-only
++# Derived from fasferraz/SWu-IKEv2 at bf5d258b7298db65e64b43065b153325eba47a9e.
++# This modified distribution uses GPL version 3; the original LICENSE is retained.
++# Local modifications and exact source hashes: docs/public/PROVENANCE.md.
++try:
++    import serial
++except ImportError:
++    pass
+ import struct
+ import socket
+ import random
+@@ -22,12 +29,24 @@
+ from Crypto.Cipher import AES
+ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+ 
+-from smartcard.System import readers
+-from smartcard.util import toHexString,toBytes
+-
+-from CryptoMobile.Milenage import Milenage
+-
+-from card.USIM import *
++try:
++    from smartcard.System import readers
++except ImportError:
++    pass
++try:
++    from smartcard.util import toHexString,toBytes
++except ImportError:
++    pass
++
++try:
++    from CryptoMobile.Milenage import Milenage
++except ImportError:
++    pass
++
++try:
++    from card.USIM import *
++except ImportError:
++    pass
+ 
+ requests.packages.urllib3.disable_warnings() 
+ 
+@@ -1556,8 +1575,7 @@
+         
+         if self.ipv6_address_list != []:
+             ipv6_address_prefix = ':'.join(self.ipv6_address_list[0].split(':')[0:4])
+-            ipv6_address_identifier = 'fe80::' + ':'.join(self.ipv6_address_list[0].split(':')[4:8])
+-            self.exec_in_netns("ip -6 addr add " + ipv6_address_identifier + "/64 dev " + self.tun_device)
++            self.exec_in_netns("ip -6 addr add " + self.ipv6_address_list[0] + "/64 dev " + self.tun_device + " nodad")
+             self.exec_in_netns("route -A inet6 add ::/1 dev " + self.tun_device)
+             self.exec_in_netns("route -A inet6 add 8000::/1 dev " + self.tun_device)
+         
+@@ -2781,6 +2799,11 @@
+ 
+         
+         else:
++            if not any(p[0] == D for p in self.decoded_payload[0][1]):
++                # liveness check (empty INFORMATIONAL request): answer, do not tear down
++                self.send_data(self.answer_INFORMATIONAL_delete())
++                print('answering INFORMATIONAL (liveness check)')
++                return
+             for i in self.decoded_payload[0][1]:
+                 if i[0] == D: # delete
+                      
+@@ -2999,11 +3022,19 @@
+         self.ike_to_ipsec_decoder.send(self.encode_inter_process_protocol(inter_process_list_start_decoder))       
+ 
+         
+-        socket_list = [sys.stdin , self.socket, self.ike_to_ipsec_decoder]
++        socket_list = ([sys.stdin] if sys.stdin.isatty() else []) + [self.socket, self.ike_to_ipsec_decoder]
+         
+         while True:
+             
+-            read_sockets, write_sockets, error_sockets = select.select(socket_list, [], [])
++            read_sockets, write_sockets, error_sockets = select.select(socket_list, [], [], 10)
++            if time.time() - getattr(self, '_last_keepalive', 0) >= 10:
++                # NAT keepalive (RFC 3948, one 0xFF byte from the NAT-T port): without it the NAT/CGNAT mapping towards the
++                # ePDG expires and the ePDG's packets (incoming SIP) are dropped.
++                self._last_keepalive = time.time()
++                try:
++                    self.socket_nat.sendto(b'\xff', self.server_address_nat)
++                except OSError:
++                    pass
+             
+             for sock in read_sockets:
+      
+@@ -3280,6 +3311,11 @@
+ 
+ 
+ def return_imsi(serial_interface_or_reader_index):
++    import usim_cp
++    return usim_cp.imsi()
++
++
++def _return_imsi_orig(serial_interface_or_reader_index):
+     try:
+         return read_imsi_2(serial_interface_or_reader_index)
+     except:
+@@ -3293,6 +3329,11 @@
+                 return DEFAULT_IMSI
+         
+ def return_res_ck_ik(serial_interface_or_reader_index, rand, autn, ki, op, opc):
++    import usim_cp
++    return usim_cp.res_ck_ik(rand, autn)
++
++
++def _return_res_ck_ik_orig(serial_interface_or_reader_index, rand, autn, ki, op, opc):
+     if ki is not None and (op is not None or opc is not None):
+         try:
+             return milenage_res_ck_ik(ki, op, opc, rand)
+@@ -3642,5 +3683,6 @@
+     
+     
+ if __name__ == "__main__":
++    multiprocessing.set_start_method("fork")
+     main()
+     

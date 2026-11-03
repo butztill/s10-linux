@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -345,6 +345,11 @@
+ int SoftwareIsp::queueBuffers(uint32_t frame, FrameBuffer *input,
+ 			      const std::map<const Stream *, FrameBuffer *> &outputs)
+ {
++	/* Stop may dispatch completion callbacks; never enqueue work after the
++	 * worker has stopped, as those buffers will be freed before restart. */
++	if (!running_)
++		return -EPIPE;
++
+ 	/*
+ 	 * Validate the outputs as a sanity check: at least one output is
+ 	 * required, all outputs must reference a valid stream.
+@@ -383,8 +388,10 @@
+ 
+ 	ispWorkerThread_.start();
+ 
+-	return debayer_->invokeMethod(&Debayer::start,
+-				      ConnectionTypeBlocking);
++	ret = debayer_->invokeMethod(&Debayer::start,
++				     ConnectionTypeBlocking);
++	running_ = ret == 0;
++	return ret;
+ }
+ 
+ /**
+@@ -395,11 +402,18 @@
+  */
+ void SoftwareIsp::stop()
+ {
+-	debayer_->invokeMethod(&Debayer::stop,
+-			       ConnectionTypeBlocking);
+-
+-	ispWorkerThread_.exit();
+-	ispWorkerThread_.wait();
++	running_ = false;
++	if (ispWorkerThread_.isRunning()) {
++		debayer_->invokeMethod(&Debayer::stop,
++				       ConnectionTypeBlocking);
++		ispWorkerThread_.exit();
++		ispWorkerThread_.wait();
++	}
++
++	/* A Thread retains queued invokes across exit()/start(). Drop any
++	 * remaining frame jobs before callers release their FrameBuffers. The
++	 * corresponding pending buffers are returned cancelled below. */
++	ispWorkerThread_.removeMessages(debayer_.get());
+ 
+ 	Thread::current()->dispatchMessages(Message::Type::InvokeMessage, this);
+ 
+--- a/include/libcamera/internal/software_isp/software_isp.h
++++ b/include/libcamera/internal/software_isp/software_isp.h
+@@ -100,6 +100,7 @@
+ 	DebayerParams debayerParams_;
+ 	DmaBufAllocator dmaHeap_;
+ 	bool ccmEnabled_;
++	bool running_ = false;
+ 
+ 	std::unique_ptr<ipa::soft::IPAProxySoft> ipa_;
+ 	std::deque<FrameBuffer *> queuedInputBuffers_;

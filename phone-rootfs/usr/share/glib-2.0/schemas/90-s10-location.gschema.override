@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# xdg-desktop-portal falls back to the gtk backend for org.freedesktop.impl.portal.Lockdown on Plasma; that
+# backend reports location as disabled unless this GNOME key is set, so Flatpak apps (GNOME Maps) got
+# "Location services disabled". Geoclue itself is gated by geoclue.conf.
+[org.gnome.system.location]
+enabled=true

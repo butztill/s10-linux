@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/tty/serial/samsung_tty.c
++++ b/drivers/tty/serial/samsung_tty.c
+@@ -45,6 +45,12 @@
+ 
+ #include <asm/irq.h>
+ 
++/* USI v2 control registers integrated in some Exynos UART blocks */
++#define S3C_USI_CON			0xc4
++#define S3C_USI_CON_RESET		BIT(0)
++#define S3C_USI_OPTION			0xc8
++#define S3C_USI_OPTION_CLKREQ_ON	BIT(1)
++
+ /* UART name and device definitions */
+ 
+ #define S3C24XX_SERIAL_NAME	"ttySAC"
+@@ -1885,6 +1891,22 @@
+ 	if (ret)
+ 		pr_warn("uart: failed to enable baudclk\n");
+ 
++	/*
++	 * UARTs with integrated USI v2 registers (e.g. Exynos9820 UART_BT)
++	 * come out of reset with USI_CON.RESET set, which silently discards
++	 * every register write. Release it before the port is configured and
++	 * keep the IP clock requested for Rx, as the vendor driver does.
++	 */
++	if (platdev->dev.of_node &&
++	    of_property_read_bool(platdev->dev.of_node, "samsung,usi-serial-v2")) {
++		wr_regl(port, S3C_USI_CON, S3C_USI_CON_RESET);
++		udelay(1);
++		wr_regl(port, S3C_USI_CON, 0);
++		udelay(1);
++		wr_regl(port, S3C_USI_OPTION, S3C_USI_OPTION_CLKREQ_ON);
++		udelay(1);
++	}
++
+ 	/* Keep all interrupts masked and cleared */
+ 	switch (ourport->info->type) {
+ 	case TYPE_S3C6400:

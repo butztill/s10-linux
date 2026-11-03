@@ -1,0 +1,35 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Work around failed early s6sy761 probing on the S10 experimental kernel.
+# Do not unbind a working device or issue raw controller commands.
+set -eu
+device=
+for candidate in /sys/bus/i2c/devices/*-0048; do
+    if [ -f "$candidate/name" ] && [ "$(cat "$candidate/name")" = s6sy761 ]; then
+        test -z "$device"
+        device=$candidate
+    fi
+done
+test -n "$device"
+address=$(basename "$device")
+driver=/sys/bus/i2c/drivers/s6sy761
+test "$(cat "$device/name")" = s6sy761
+if [ -L "$device/driver" ] && [ "$(basename "$(readlink "$device/driver")")" != s6sy761 ]; then
+    echo 'Touch address is bound to another driver; refusing to change it.' >&2
+    exit 1
+fi
+for attempt in 1 2 3; do
+    if [ -L "$device/driver" ]; then
+        break
+    fi
+    echo "Retrying s6sy761 probe (attempt $attempt)."
+    if printf %s "$address" | tee "$driver/bind" >/dev/null; then
+        break
+    fi
+    sleep 1
+done
+test -L "$device/driver"
+# The current driver enables runtime PM without getting a reference in
+# input_open(). Keep this controller awake while its integration is incomplete.
+printf 'on' | tee "$device/power/control" >/dev/null
+echo 'Touchscreen bound; runtime power saving disabled for this device.'

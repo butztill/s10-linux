@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Exynos hardware watchdog feeder (feeds only while every CPU makes progress)
+DefaultDependencies=no
+ConditionPathExists=/sys/bus/platform/devices/10050000.watchdog
+After=local-fs.target
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/s10-power/s10-wdt-feed.py --release
+Restart=always
+RestartSec=1
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

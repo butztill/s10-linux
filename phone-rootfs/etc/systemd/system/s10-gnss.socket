@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=S10 GNSS NMEA socket for geoclue (starts s10-gnss on demand)
+
+[Socket]
+ListenStream=/run/gps-share.sock
+SocketMode=0666
+Service=s10-gnss.service
+
+[Install]
+WantedBy=sockets.target

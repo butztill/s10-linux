@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_gpu.c
++++ b/drivers/gpu/drm/panfrost/panfrost_gpu.c
+@@ -170,6 +170,16 @@
+ 	if (quirks)
+ 		gpu_write(pfdev, GPU_JM_CONFIG, quirks);
+ 
++	/*
++	 * Program the selected coherency protocol after every reset. Its reset
++	 * value is 0 (ACE-Lite); on non-coherent integrations such as the
++	 * Exynos 9820 Mali-G76 the GPU must be told COHERENCY_NONE, as Arm's
++	 * kbase does in kbase_cache_set_coherency_mode().
++	 */
++	if (panfrost_has_hw_feature(pfdev, HW_FEATURE_COHERENCY_REG))
++		gpu_write(pfdev, GPU_COHERENCY_ENABLE,
++			  pfdev->features.selected_coherency);
++
+ 	/* Here goes platform specific quirks */
+ 	if (pfdev->comp->vendor_quirk)
+ 		pfdev->comp->vendor_quirk(pfdev);

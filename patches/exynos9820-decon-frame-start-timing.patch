@@ -1,0 +1,244 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/tiny/exynos9820-decon.c
++++ b/drivers/gpu/drm/tiny/exynos9820-decon.c
+@@ -28,6 +28,7 @@
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
++#include <linux/ktime.h>
+ #include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/of_reserved_mem.h>
+@@ -53,12 +54,21 @@
+ #include <drm/drm_simple_kms_helper.h>
+ #include <drm/drm_vblank.h>
+ 
++#define CREATE_TRACE_POINTS
++#include <trace/events/s10_decon.h>
++
++/* Opt-in A/B test; select once at boot so the vblank phase stays stable. */
++static bool flip_on_start;
++module_param(flip_on_start, bool, 0444);
++MODULE_PARM_DESC(flip_on_start, "Complete a latched flip at FRAME_START instead of FRAME_DONE");
++
+ #define DRIVER_NAME		"exynos9820-decon"
+ 
+ /* DECON registers (stock cal_9820/regs-decon.h) */
+ #define GLOBAL_CONTROL			0x0000
+ #define GLOBAL_CONTROL_RUN_STATUS	BIT(4)
+ #define INTERRUPT_ENABLE		0x0040
++#define DPU_FRAME_START_INT_EN		BIT(12)
+ #define DPU_FRAME_DONE_INT_EN		BIT(13)
+ #define DPU_INT_EN			BIT(0)
+ #define EXTRA_INTERRUPT_ENABLE		0x0044
+@@ -115,6 +125,9 @@
+ 
+ 	/* flip completion, protected by drm.event_lock */
+ 	struct drm_pending_vblank_event *event;
++	u64 commit_id;
++	u64 update_ns;
++	u32 fb_id;
+ };
+ 
+ static struct s10_decon *to_s10_decon(struct drm_device *drm)
+@@ -456,18 +469,34 @@
+ 	writel(pend & (DPU_FRAME_DONE_INT_PEND | DPU_FRAME_START_INT_PEND |
+ 		       DPU_EXTRA_INT_PEND), priv->decon + INTERRUPT_PENDING);
+ 
+-	if (!(pend & DPU_FRAME_DONE_INT_PEND))
++	spin_lock_irqsave(&priv->drm.event_lock, flags);
++	if (trace_s10_decon_frame_enabled()) {
++		u32 shadow = readl(priv->decon + SHADOW_REG_UPDATE_REQ);
++		u64 age = priv->update_ns ? ktime_get_ns() - priv->update_ns : 0;
++
++		if (pend & DPU_FRAME_START_INT_PEND)
++			trace_s10_decon_frame(1, priv->commit_id, priv->fb_id, pend, shadow, age);
++		if (pend & DPU_FRAME_DONE_INT_PEND)
++			trace_s10_decon_frame(2, priv->commit_id, priv->fb_id, pend, shadow, age);
++	}
++	spin_unlock_irqrestore(&priv->drm.event_lock, flags);
++
++	if (!(pend & (flip_on_start ? DPU_FRAME_START_INT_PEND : DPU_FRAME_DONE_INT_PEND)))
+ 		return IRQ_HANDLED;
+ 
+ 	drm_crtc_handle_vblank(crtc);
+ 
+ 	/*
+-	 * Complete a flip only after the frame that latched it: the shadow
+-	 * request clears at the frame start that applies it, so a frame done
+-	 * seen while it is still pending belongs to the previous buffer.
++	 * Samsung's command-mode update path waits for FRAME_START followed by
++	 * shadow-update completion before releasing old buffers. Retain that
++	 * latch guard in both modes: an IRQ with the request still pending is
++	 * for the previous buffer. FRAME_DONE remains the default A/B fallback.
+ 	 */
+ 	spin_lock_irqsave(&priv->drm.event_lock, flags);
+ 	if (priv->event && !s10_decon_update_pending(priv)) {
++		trace_s10_decon_frame(3, priv->commit_id, priv->fb_id, pend,
++			readl(priv->decon + SHADOW_REG_UPDATE_REQ),
++			ktime_get_ns() - priv->update_ns);
+ 		drm_crtc_send_vblank_event(crtc, priv->event);
+ 		drm_crtc_vblank_put(crtc);
+ 		priv->event = NULL;
+@@ -513,16 +542,6 @@
+ 	return 0;
+ }
+ 
+-static void s10_decon_send_event_now(struct drm_crtc *crtc,
+-				     struct drm_pending_vblank_event *event)
+-{
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+-	drm_crtc_send_vblank_event(crtc, event);
+-	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+-}
+-
+ static void s10_decon_update(struct drm_simple_display_pipe *pipe,
+ 			     struct drm_plane_state *old_state)
+ {
+@@ -531,30 +550,34 @@
+ 	struct drm_crtc *crtc = &pipe->crtc;
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+ 	struct drm_framebuffer *fb = state->fb;
++	bool have_vblank = event && !drm_crtc_vblank_get(crtc);
+ 	unsigned long flags;
+ 
++	crtc->state->event = NULL;
++	spin_lock_irqsave(&priv->drm.event_lock, flags);
++	priv->commit_id++;
++	priv->update_ns = ktime_get_ns();
++	priv->fb_id = fb ? fb->base.id : 0;
++
+ 	if (fb && state->visible) {
+-		/* the source x/y offset goes into IDMA_SRC_OFFSET, as in stock */
+-		dma_addr_t addr = drm_fb_dma_get_gem_obj(fb, 0)->dma_addr +
+-				  fb->offsets[0];
++		dma_addr_t addr = drm_fb_dma_get_gem_obj(fb, 0)->dma_addr + fb->offsets[0];
+ 
+ 		s10_decon_scanout(priv, addr, fb->pitches[0], fb->height,
+ 				  state->src.x1 >> 16, state->src.y1 >> 16,
+ 				  drm_rect_width(&state->dst),
+ 				  drm_rect_height(&state->dst));
+ 	}
+-
+-	if (!event)
+-		return;
+-	crtc->state->event = NULL;
+-
+-	if (drm_crtc_vblank_get(crtc)) {
+-		s10_decon_send_event_now(crtc, event);
+-		return;
+-	}
+-	spin_lock_irqsave(&priv->drm.event_lock, flags);
+-	WARN_ON(priv->event);
+-	priv->event = event;
++	trace_s10_decon_frame(0, priv->commit_id, priv->fb_id, 0,
++		readl(priv->decon + SHADOW_REG_UPDATE_REQ), 0);
++
++	if (event) {
++		if (have_vblank) {
++			WARN_ON(priv->event);
++			priv->event = event;
++		} else {
++			drm_crtc_send_vblank_event(crtc, event);
++		}
++	}
+ 	spin_unlock_irqrestore(&priv->drm.event_lock, flags);
+ }
+ 
+@@ -670,7 +693,7 @@
+ 	struct s10_decon *priv;
+ 	struct drm_device *drm;
+ 	u32 size, width_mm = 0, height_mm = 0;
+-	int irq, ret;
++	int irq, irq_start, ret;
+ 
+ 	priv = devm_drm_dev_alloc(dev, &s10_decon_driver, struct s10_decon, drm);
+ 	if (IS_ERR(priv))
+@@ -700,9 +723,17 @@
+ 	of_node_put(boot_fb_np);
+ 	if (!boot_fb || boot_fb->base + boot_fb->size > SZ_4G)
+ 		return dev_err_probe(dev, -EINVAL, "missing boot framebuffer memory-region\n");
+-	irq = platform_get_irq(pdev, 0);
++	/* DECON routes FRAME_START and FRAME_DONE to distinct GIC SPIs. */
++	irq = platform_get_irq_byname_optional(pdev, "frame-done");
++	if (irq < 0)
++		irq = platform_get_irq(pdev, 0); /* original single-DONE DTB */
+ 	if (irq < 0)
+ 		return irq;
++	irq_start = platform_get_irq_byname_optional(pdev, "frame-start");
++	if (irq_start == -EPROBE_DEFER)
++		return irq_start;
++	if (flip_on_start && irq_start < 0)
++		return dev_err_probe(dev, irq_start, "FRAME_START mode requires its separate IRQ in the DTB\n");
+ 
+ 	if (!(readl(priv->decon + GLOBAL_CONTROL) & GLOBAL_CONTROL_RUN_STATUS))
+ 		return dev_err_probe(dev, -ENODEV,
+@@ -738,6 +769,7 @@
+ 	ret = devm_add_action_or_reset(dev, s10_decon_pm_put, dev);
+ 	if (ret)
+ 		return ret;
++	drm_info(drm, "flip completion at FRAME_%s\n", flip_on_start ? "START" : "DONE");
+ 	drm_info(drm, "scanout through %s\n",
+ 		 device_iommu_mapped(dev) ? "SysMMU DPU0" : "physical addresses (no IOMMU)");
+ 
+@@ -789,11 +821,18 @@
+ 	/* clear what accumulated since the bootloader, then take interrupts */
+ 	writel(DPU_FRAME_DONE_INT_PEND | DPU_FRAME_START_INT_PEND | DPU_EXTRA_INT_PEND,
+ 	       priv->decon + INTERRUPT_PENDING);
+-	writel(readl(priv->decon + INTERRUPT_ENABLE) | DPU_FRAME_DONE_INT_EN | DPU_INT_EN,
++	writel(readl(priv->decon + INTERRUPT_ENABLE) | DPU_FRAME_DONE_INT_EN |
++	       (irq_start >= 0 ? DPU_FRAME_START_INT_EN : 0) | DPU_INT_EN,
+ 	       priv->decon + INTERRUPT_ENABLE);
+ 	ret = devm_request_irq(dev, irq, s10_decon_irq, 0, DRIVER_NAME, priv);
+ 	if (ret)
+ 		return ret;
++	if (irq_start >= 0 && irq_start != irq) {
++		ret = devm_request_irq(dev, irq_start, s10_decon_irq, 0, DRIVER_NAME "-start", priv);
++		if (ret)
++			return ret;
++	}
++	drm_info(drm, "frame IRQs: DONE=%d START=%d\n", irq, irq_start);
+ 
+ 	/*
+ 	 * Take the boot framebuffer away from simpledrm only once nothing
+--- /dev/null
++++ b/include/trace/events/s10_decon.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#undef TRACE_SYSTEM
++#define TRACE_SYSTEM s10_decon
++
++#if !defined(_TRACE_S10_DECON_H) || defined(TRACE_HEADER_MULTI_READ)
++#define _TRACE_S10_DECON_H
++
++#include <linux/tracepoint.h>
++
++TRACE_EVENT(s10_decon_frame,
++	TP_PROTO(u32 phase, u64 commit, u32 fb, u32 pending, u32 shadow, u64 age_ns),
++	TP_ARGS(phase, commit, fb, pending, shadow, age_ns),
++	TP_STRUCT__entry(
++		__field(u32, phase)
++		__field(u64, commit)
++		__field(u32, fb)
++		__field(u32, pending)
++		__field(u32, shadow)
++		__field(u64, age_ns)
++	),
++	TP_fast_assign(
++		__entry->phase = phase;
++		__entry->commit = commit;
++		__entry->fb = fb;
++		__entry->pending = pending;
++		__entry->shadow = shadow;
++		__entry->age_ns = age_ns;
++	),
++	TP_printk("phase=%s commit=%llu fb=%u pending=0x%x shadow=0x%x age_ns=%llu",
++		__print_symbolic(__entry->phase, {0, "update"}, {1, "start"},
++				 {2, "done"}, {3, "flip"}),
++		__entry->commit, __entry->fb, __entry->pending,
++		__entry->shadow, __entry->age_ns)
++);
++#endif
++#include <trace/define_trace.h>

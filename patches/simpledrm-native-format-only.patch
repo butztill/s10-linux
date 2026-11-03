@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -3,6 +3,7 @@
+ #include <linux/aperture.h>
+ #include <linux/clk.h>
+ #include <linux/minmax.h>
++#include <linux/moduleparam.h>
+ #include <linux/of_address.h>
+ #include <linux/of_clk.h>
+ #include <linux/of_reserved_mem.h>
+@@ -37,6 +38,11 @@
+ #define DRIVER_MAJOR	1
+ #define DRIVER_MINOR	0
+ 
++/* Opt-in bring-up aid: avoid software conversion on fixed framebuffers. */
++static bool native_format_only;
++module_param(native_format_only, bool, 0444);
++MODULE_PARM_DESC(native_format_only, "Expose only the firmware framebuffer's native pixel format");
++
+ /*
+  * Helpers for simplefb
+  */
+@@ -763,8 +769,14 @@
+ 
+ 	/* Primary plane */
+ 
+-	nformats = drm_sysfb_build_fourcc_list(dev, &format->format, 1,
++	if (native_format_only) {
++		sdev->formats[0] = format->format;
++		nformats = 1;
++		drm_info(dev, "Native framebuffer format only: %p4cc\n", &format->format);
++	} else {
++		nformats = drm_sysfb_build_fourcc_list(dev, &format->format, 1,
+ 					       sdev->formats, ARRAY_SIZE(sdev->formats));
++	}
+ 
+ 	primary_plane = &sdev->primary_plane;
+ 	ret = drm_universal_plane_init(dev, primary_plane, 0, &simpledrm_primary_plane_funcs,

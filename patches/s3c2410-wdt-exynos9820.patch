@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/watchdog/s3c2410_wdt.c	2026-10-26 17:55:17.677427951 +0100
++++ b/drivers/watchdog/s3c2410_wdt.c	2026-10-26 17:55:17.684839906 +0100
+@@ -266,6 +266,17 @@
+ 		  QUIRK_HAS_PMU_RST_STAT | QUIRK_HAS_PMU_CNT_EN,
+ };
+ 
++/* Exynos9820 (Galaxy S10): same PMU layout as Exynos850 cluster 0, but Samsung's own driver never touches NONCPU_OUT. */
++static const struct s3c2410_wdt_variant drv_data_exynos9820_cl0 = {
++	.mask_reset_reg = EXYNOS850_CLUSTER0_NONCPU_INT_EN,
++	.mask_bit = 2,
++	.mask_reset_inv = true,
++	.rst_stat_reg = EXYNOS5_RST_STAT_REG_OFFSET,
++	.rst_stat_bit = EXYNOS850_CLUSTER0_WDTRESET_BIT,
++	.quirks = QUIRK_HAS_WTCLRINT_REG | QUIRK_HAS_PMU_MASK_RESET |
++		  QUIRK_HAS_PMU_RST_STAT,
++};
++
+ static const struct s3c2410_wdt_variant drv_data_exynos990_cl0 = {
+ 	.mask_reset_reg = GS_CLUSTER0_NONCPU_INT_EN,
+ 	.mask_bit = 2,
+@@ -383,6 +394,8 @@
+ 	  .data = &drv_data_exynos7 },
+ 	{ .compatible = "samsung,exynos850-wdt",
+ 	  .data = &drv_data_exynos850_cl0 },
++	{ .compatible = "samsung,exynos9820-wdt",
++	  .data = &drv_data_exynos9820_cl0 },
+ 	{ .compatible = "samsung,exynos990-wdt",
+ 	  .data = &drv_data_exynos990_cl0 },
+ 	{ .compatible = "samsung,exynosautov9-wdt",

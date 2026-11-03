@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[Unit]
+Description=Restore tested Galaxy S10 speaker audio
+ConditionKernelVersion=7.2.0-rc2-s10-panfrost1
+ConditionPathExists=/sys/firmware/devicetree/base/soc@0/abox-speaker-card
+After=systemd-modules-load.service
+Before=plasma-mobile.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/enable-s10-audio
+RemainAfterExit=yes
+TimeoutStartSec=20
+# No ExecStop: powering down AUD after UAIF use is not supported yet.
+
+[Install]
+WantedBy=multi-user.target

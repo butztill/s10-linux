@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+diff -ruN ra/src/libcamera/software_isp/s10_bayer_resize.h rb/src/libcamera/software_isp/s10_bayer_resize.h
+--- a/src/libcamera/software_isp/s10_bayer_resize.h	2026-10-28 03:22:13.572694066 +0100
++++ b/src/libcamera/software_isp/s10_bayer_resize.h	2026-10-28 03:22:13.581150574 +0100
+@@ -10,8 +10,12 @@
+ /* Resize unpacked RAW10 before demosaicing, keeping each Bayer phase separate.
+  * Unlike the original CPU ISP's centre crop, this covers the sensor's full
+  * horizontal/vertical field subject only to matching the output aspect ratio.
+- * Nearest 2x2-cell sampling is intentionally conservative about colour phase;
+- * it is not a calibrated photographic resampler. */
++ * Each output sample averages two same-phase input pixels (the selected 2x2
++ * cell and its right neighbour cell): this keeps the colour phase, lowers the
++ * noise of plain decimation and gives the AWB statistics cleaner input, while
++ * still reading only one source row per output row (the CSIS buffers are
++ * uncached, so source rows are the dominant cost). It is not a calibrated
++ * photographic resampler. */
+ class S10BayerResize
+ {
+ public:
+@@ -38,6 +42,10 @@
+ 			y_[y] = oy + 2 * std::min<uint64_t>(ch / 2 - 1,
+ 				(uint64_t(2 * (y / 2) + 1) * (ch / 2)) / dh) + (y & 1);
+ 		stride_ = stride;
++		sw_ = sw; sh_ = sh;
++		x2_.resize(dw);
++		for (unsigned int x = 0; x < dw; ++x)
++			x2_[x] = x_[x] + 2 < sw ? x_[x] + 2 : x_[x];
+ 		row_.resize(size_t(sw) * 2);
+ 		length_ = size_t(sh - 1) * stride + sw * 2;
+ 		pixels_.resize(size_t(dw) * dh * 2);
+@@ -47,16 +55,14 @@
+ 	{
+ 		if (!src || length < length_ || pixels_.empty())
+ 			return false;
+-		uint8_t *dst = pixels_.data();
++		uint16_t *dst = reinterpret_cast<uint16_t *>(pixels_.data());
+ 		for (unsigned int y : y_) {
+ 			/* DMA mappings can be uncached: gather from a cached row, not
+-			 * individual byte loads over the device/interconnect bus. */
++			 * individual loads over the device/interconnect bus. */
+ 			std::memcpy(row_.data(), src + size_t(y) * stride_, row_.size());
+-			const uint8_t *line = row_.data();
+-			for (unsigned int x : x_) {
+-				*dst++ = line[2 * x];
+-				*dst++ = line[2 * x + 1];
+-			}
++			const uint16_t *a = reinterpret_cast<const uint16_t *>(row_.data());
++			for (size_t i = 0; i < x_.size(); ++i)
++				*dst++ = uint16_t((a[x_[i]] + a[x2_[i]] + 1) >> 1);
+ 		}
+ 		return true;
+ 	}
+@@ -64,7 +70,8 @@
+ private:
+ 	unsigned int stride_ = 0;
+ 	size_t length_ = 0;
+-	std::vector<unsigned int> x_, y_;
++	unsigned int sw_ = 0, sh_ = 0;
++	std::vector<unsigned int> x_, x2_, y_;
+ 	std::vector<uint8_t> pixels_, row_;
+ };
+ } /* namespace libcamera */

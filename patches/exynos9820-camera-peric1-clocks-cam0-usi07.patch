@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clk/samsung/clk-exynos9820.c	2026-10-20 23:23:33.464648893 +0200
++++ b/drivers/clk/samsung/clk-exynos9820.c	2026-10-20 23:23:33.525023884 +0200
+@@ -789,6 +789,7 @@
+ 	0x203c, 0x2040, 0x20e8, 0x20ec,
+ 	0x0160, 0x1808, 0x2044, 0x2048,
+ 	0x02e0, 0x1838, 0x2110, 0x2114,
++	0x0120, 0x1800, 0x2034, 0x2038, 0x20b0, 0x20b4,
++	0x0180, 0x180c, 0x204c, 0x2050,
+ };
+ 
+ PNAME(mout_peric1_bus_user_p) = { "oscclk", "dout_cmu_peric1_bus" };
+@@ -805,6 +806,8 @@
+ 	    mout_peric1_ip_user_p, 0x0160, 4, 1),
+ 	MUX(CLK_MOUT_PERIC1_USI_I2C_USER, "mout_peric1_usi_i2c_user",
+ 	    mout_peric1_ip_user_p, 0x02e0, 4, 1),
++	MUX(CLK_MOUT_PERIC1_I2C_CAM0_USER, "mout_peric1_i2c_cam0_user",
++	    mout_peric1_ip_user_p, 0x0120, 4, 1),
++	MUX(CLK_MOUT_PERIC1_I2C_CAM3_USER, "mout_peric1_i2c_cam3_user",
++	    mout_peric1_ip_user_p, 0x0180, 4, 1),
+ };
+ 
+ static const struct samsung_div_clock peric1_div_clks[] __initconst = {
+@@ -816,6 +819,8 @@
+ 	    "mout_peric1_i2c_cam2_user", 0x1808, 0, 4),
+ 	DIV(CLK_DOUT_PERIC1_USI_I2C, "dout_peric1_usi_i2c",
+ 	    "mout_peric1_usi_i2c_user", 0x1838, 0, 4),
++	DIV(CLK_DOUT_PERIC1_I2C_CAM0, "dout_peric1_i2c_cam0",
++	    "mout_peric1_i2c_cam0_user", 0x1800, 0, 4),
++	DIV(CLK_DOUT_PERIC1_I2C_CAM3, "dout_peric1_i2c_cam3",
++	    "mout_peric1_i2c_cam3_user", 0x180c, 0, 4),
+ };
+ 
+ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
+@@ -831,6 +836,15 @@
+ 	     "dout_peric1_i2c_cam2", 0x2044, 21, CLK_SET_RATE_PARENT, 0),
+ 	GATE(CLK_GOUT_PERIC1_I2C_CAM2_PCLK, "gout_peric1_i2c_cam2_pclk",
+ 	     "mout_peric1_bus_user", 0x2048, 21, 0, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM0_IPCLK, "gout_peric1_i2c_cam0_ipclk",
++	     "dout_peric1_i2c_cam0", 0x2034, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM0_PCLK, "gout_peric1_i2c_cam0_pclk",
++	     "mout_peric1_bus_user", 0x2038, 21, 0, 0),
++	/* I2C CAM3 channel: rear-flex bus with the tele AF actuator and the
++	 * rear EEPROM (hsi2c_3, 0x10890000).
++	 */
++	GATE(CLK_GOUT_PERIC1_I2C_CAM3_IPCLK, "gout_peric1_i2c_cam3_ipclk",
++	     "dout_peric1_i2c_cam3", 0x204c, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_I2C_CAM3_PCLK, "gout_peric1_i2c_cam3_pclk",
++	     "mout_peric1_bus_user", 0x2050, 21, 0, 0),
++	/* USI07 I2C channel: S5K3M3 tele camera bus (hsi2c_19, 0x108d0000). */
++	GATE(CLK_GOUT_PERIC1_USI07_I2C_IPCLK, "gout_peric1_usi07_i2c_ipclk",
++	     "dout_peric1_usi_i2c", 0x20b0, 21, CLK_SET_RATE_PARENT, 0),
++	GATE(CLK_GOUT_PERIC1_USI07_I2C_PCLK, "gout_peric1_usi07_i2c_pclk",
++	     "mout_peric1_bus_user", 0x20b4, 21, 0, 0),
+ 	/* USI17 I2C channel: audio amplifier bus (hsi2c_38, 0x109a0000). */
+ 	GATE(CLK_GOUT_PERIC1_USI17_I2C_IPCLK, "gout_peric1_usi17_i2c_ipclk",
+ 	     "dout_peric1_usi_i2c", 0x2110, 21, CLK_SET_RATE_PARENT, 0),
+--- a/include/dt-bindings/clock/exynos9820.h	2026-10-20 23:23:33.472682666 +0200
++++ b/include/dt-bindings/clock/exynos9820.h	2026-10-20 23:23:33.526026615 +0200
+@@ -146,7 +146,13 @@
+ #define CLK_DOUT_PERIC1_USI_I2C			15
+ #define CLK_GOUT_PERIC1_USI17_I2C_IPCLK		16
+ #define CLK_GOUT_PERIC1_USI17_I2C_PCLK		17
+-#define CLK_NR_PERIC1		18
++#define CLK_MOUT_PERIC1_I2C_CAM0_USER		18
++#define CLK_DOUT_PERIC1_I2C_CAM0		19
++#define CLK_GOUT_PERIC1_I2C_CAM0_IPCLK		20
++#define CLK_GOUT_PERIC1_I2C_CAM0_PCLK		21
++#define CLK_GOUT_PERIC1_USI07_I2C_IPCLK		22
++#define CLK_GOUT_PERIC1_USI07_I2C_PCLK		23
++#define CLK_MOUT_PERIC1_I2C_CAM3_USER		24
++#define CLK_DOUT_PERIC1_I2C_CAM3		25
++#define CLK_GOUT_PERIC1_I2C_CAM3_IPCLK		26
++#define CLK_GOUT_PERIC1_I2C_CAM3_PCLK		27
++#define CLK_NR_PERIC1		28
+ 
+ /* CMU_FSYS0A */
+ #define CLK_MOUT_FSYS0A_BUS_USER				1

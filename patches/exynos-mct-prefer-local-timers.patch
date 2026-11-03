@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/clocksource/exynos_mct.c
++++ b/drivers/clocksource/exynos_mct.c
+@@ -77,6 +77,8 @@
+ static void __iomem *reg_base;
+ static unsigned long clk_rate;
+ static unsigned int mct_int_type;
++/* Samsung's stock kernel keeps the arch timer clocksource-only and ticks on the MCT local timers (always-on, can wake a core in C2). */
++static unsigned int mct_local_rating = MCT_CLKEVENTS_RATING;
+ static int mct_irqs[MCT_NR_IRQS];
+ 
+ struct mct_clock_event_device {
+@@ -470,7 +472,7 @@
+ 	evt->tick_resume = set_state_shutdown;
+ 	evt->features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT |
+ 			CLOCK_EVT_FEAT_PERCPU;
+-	evt->rating = MCT_CLKEVENTS_RATING;
++	evt->rating = mct_local_rating;
+ 
+ 	exynos4_mct_write(TICK_BASE_CNT, mevt->base + MCT_L_TCNTB_OFFSET);
+ 
+@@ -542,6 +544,8 @@
+ 	int nr_irqs, i, err, cpu;
+ 
+ 	mct_int_type = int_type;
++	if (of_property_read_bool(np, "samsung,prefer-local-timers"))
++		mct_local_rating = 500;
+ 
+ 	/* This driver uses only one global timer interrupt */
+ 	mct_irqs[MCT_G0_IRQ] = irq_of_parse_and_map(np, MCT_G0_IRQ);

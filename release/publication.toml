@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: GPL-2.0-only
+version = 1
+source_manifest = "release/component-sources.toml"
+required_components = ["linux", "libcamera", "plasma-camera", "megapixels", "libmegapixels", "u-boot-reference", "clatd", "swu-ikev2", "phoc", "wlroots", "modemmanager"]
+review_decisions = "release/reviewed-files.json"
+include = [
+    "release/module-build-review.json",
+    "release/module-build-review.json.license",
+    "release/camera-firmware-review.json",
+    "release/camera-firmware-review.json.license",
+    "scripts/prepare-s5k-firmware.py",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "NOTICE.md",
+    "LICENSES/**",
+    "docs/public/**",
+    "release/publication.toml",
+    "release/libcamera.series",
+    "release/component-sources.toml",
+    "patches/plasma-camera/0100-s10-camera-public.patch",
+    "scripts/prepare-libcamera-source.py",
+    "release/license-texts.sha256",
+    "release/reviewed-files.json",
+    "release/reviewed-files.json.license",
+    "release/metadata-review.tsv",
+    "scripts/publication.py",
+    "scripts/build-kernel-reproducible.sh",
+    "scripts/build-libcamera-s10.sh",
+    "scripts/prepare-s5k-tables.py",
+    "scripts/prepare-csis-settle.py",
+    "scripts/gen-exynos9820-sleep-seq.py",
+    "scripts/build-external-modules.py",
+    "tests/test_*.py",
+    "tests/camera-photo-processing/**",
+    "tests/s10-autofocus.cpp",
+    "tests/s10-bayer-resize.cpp",
+    "tests/test-suspend-phase-markers.py",
+    "tests/test-suspend-finisher.py",
+    "kernel/**",
+    "drivers/**",
+    "dts/*.dts",
+    "userspace/**",
+    "phone-rootfs/**",
+    "configs/**",
+    "modprobe.d/**",
+    "systemd/**",
+    "u-boot-port/**",
+    "patches/**",
+    "release/modules.list",
+    "release/modem-source-recovery.json",
+    "release/modem-source-recovery.json.license",
+]
+extra = [
+    "release/module-build-review.json",
+    "release/module-build-review.json.license",
+    "tests/test_module_sources.py",
+    "release/camera-firmware-review.json",
+    "release/camera-firmware-review.json.license",
+    "scripts/prepare-s5k-firmware.py",
+    "tests/test_sensor_firmware.py",
+    "drivers/s10-camera-v4l2/s5k-fw.h",
+    "drivers/s10-camera-v4l2/s5k-fw-manifest.h",
+    "userspace/modem/boot-link.sh",
+    "userspace/modem/boot2.sh",
+    "userspace/modem/run.sh",
+    "userspace/modem/load-radio.py",
+
+    "tests/test_modem_transport.py",
+    "userspace/modem/rfsd.py",
+    "userspace/modem/s10cp.py",
+    "userspace/modem/ipc.py",
+    "userspace/modem/boot/s10-cp-boot.c",
+    "userspace/modem/boot/Makefile",
+    "userspace/modem/tty/s10-modem-tty.c",
+    "userspace/modem/tty/Makefile",
+    "README.md",
+    "CONTRIBUTING.md",
+    "NOTICE.md",
+    "LICENSES/**",
+    "docs/public/**",
+    "release/publication.toml",
+    "release/libcamera.series",
+    "release/component-sources.toml",
+    "patches/plasma-camera/0100-s10-camera-public.patch",
+    "scripts/prepare-libcamera-source.py",
+    "release/license-texts.sha256",
+    "scripts/publication.py",
+    "tests/test_publication.py",
+    "tests/test_sensor_crc.py",
+    "tests/test_ims_identity.py",
+    "tests/test_sensor_tables.py",
+    "patches/vowifi/s10-swu-integration.patch",
+    "release/reviewed-files.json",
+    "release/reviewed-files.json.license",
+    "release/metadata-review.tsv",
+    "userspace/modem/telephony-policy.json.example.license",
+    "drivers/s10-camera-v4l2/vb2/videobuf2-core.c.license",
+    "drivers/s10-camera-v4l2/vb2/videobuf2-dma-contig.c.license",
+    "drivers/s10-camera-v4l2/vb2/videobuf2-memops.c.license",
+    "drivers/s10-camera-v4l2/vb2/videobuf2-v4l2.c.license",
+    "kernel/overlay/.mailmap.license",
+    "kernel/overlay/MAINTAINERS.license",
+    "kernel/overlay/tools/virtio/linux/device.h.license",
+    "kernel/config-7.2.0-rc2-s10-panfrost1.license",
+    "u-boot-port/exynos9820_defconfig.license",
+    "scripts/build-external-modules.py",
+    "release/modules.list",
+    "release/modem-source-recovery.json",
+    "release/modem-source-recovery.json.license",
+    "tests/test-suspend-phase-markers.py",
+    "tests/test-suspend-finisher.py",
+]
+public_documents = [
+    "README.md",
+    "CONTRIBUTING.md",
+    "NOTICE.md",
+    "docs/public/*.md",
+    "u-boot-port/UBOOT.md",
+    "userspace/modem/README.md",
+    "userspace/vowifi/README.md",
+]
+exclude = [
+    "patches/plasma-camera/0001-s10-usable-camera-controls.patch",
+    "patches/plasma-camera/0002-separate-preview-and-full-resolution-capture.patch",
+    "patches/plasma-camera/0003-bounded-preview-and-background-photo-denoise.patch",
+    "patches/plasma-camera/0004-zsl-preview-raw-anchor.patch",
+    "phone-rootfs/etc/geoclue/geoclue.conf",
+    "phone-rootfs/etc/modprobe.d/blacklist.conf",
+    "tests/camera-color/**",
+    "patches/libcamera/0015-s10-fast-exposure-convergence.patch",
+    "scripts/build-stock-camera-diag-initrd.py",
+    "scripts/prepare-s10-stock-c2-reference.py",
+    "scripts/kexec-stock-m1.sh",
+    "drivers/s10-camera-v4l2/*tables.h",
+    "drivers/s10-camera-control/s10-3p9-test-tables.h",
+    "phone-rootfs/etc/systemd/system/*restore-default*",
+    "systemd/*restore-default*",
+    "phone-rootfs/etc/systemd/system/s10-panfrost-usb-test.service",
+    "phone-rootfs/boot/**",
+    "kernel/EXPECTED.sha256",
+    "patches/libcamera/0014-s10-stock-reference-color.patch",
+    "patches/libcamera/0016-s10-ultra-wide-stock-reference-color.patch",
+    "scripts/extract-stock-camera-color.py",
+    "scripts/generate-s10-color-tuning.py",
+    "scripts/decompile-*.sh",
+    "scripts/ghidra/**",
+    "scripts/ghidra-*.py",
+    "scripts/build-stock-*.sh",
+    "scripts/stage-stock-*.py",
+    "patches/stock-*.patch",
+    "userspace/gnss/decode_cap.py",
+    "userspace/gnss/gnss_hal.py",
+    "drivers/s10-main-camera-id/**",
+    "drivers/s10-camera-control/s10-3p9-identify.c",
+    "drivers/s10-camera-control/s10-camera-capture.c",
+]
+
+[[review]]
+paths = ["kernel/overlay/drivers/soc/samsung/exynos9820-sleep-seq.h"]
+reason = "Record the exact open-source input, revision, license and generation command for imported register tables."
+
+[[review]]
+paths = ["userspace/vowifi/swu_emulator.py"]
+reason = "Verify exact upstream revision, retained GPLv3 text and the reproducible local integration patch; no GPLv2 relicensing."
+
+[[review]]
+paths = ["dts/*.dts"]
+reason = "Device trees were decompiled during bring-up; establish the original source/license chain and replace installation-specific identifiers."
+
+
+
+[[review]]
+paths = ["phone-rootfs/etc/geoclue/geoclue.conf", "phone-rootfs/etc/modprobe.d/blacklist.conf"]
+reason = "Generic distribution configuration copied during bring-up; establish its actual source/license rather than applying the project integration grant."
+
+
+[[license_requirement]]
+paths = ["userspace/vowifi/usim_cp.py"]
+expressions = ["GPL-2.0-or-later"]
+reason = "The original SIM adapter has an explicitly confirmed GPL-2.0-or-later grant so it can be shared by the GPLv2 IMS client and GPLv3 SWu process. Preserve this component-specific choice."
+
+[[source_dependency]]
+owner = "userspace/modem/s10modemd.py"
+requires = ["userspace/modem/rfsd.py", "userspace/modem/s10cp.py", "userspace/modem/ipc.py"]
+
+[[source_dependency]]
+owner = "drivers/s10-camera-v4l2/s5k-cis.c"
+requires = ["drivers/s10-camera-v4l2/s5k-fw.h", "drivers/s10-camera-v4l2/s5k-fw-manifest.h"]
+
+[[source_dependency]]
+owner = "phone-rootfs/etc/systemd/system/s10-modem.service"
+requires = ["userspace/modem/boot-link.sh"]
+
+[[source_dependency]]
+owner = "userspace/modem/boot-link.sh"
+requires = ["userspace/modem/boot2.sh", "userspace/modem/run.sh", "userspace/modem/s10modemd.py", "userspace/modem/tty/s10-modem-tty.c", "userspace/modem/tty/Makefile"]
+
+[[source_dependency]]
+owner = "userspace/modem/boot2.sh"
+requires = ["userspace/modem/run.sh", "userspace/modem/load-radio.py", "userspace/modem/boot/s10-cp-boot.c", "userspace/modem/boot/Makefile"]

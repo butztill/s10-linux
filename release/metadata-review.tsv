@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# No unresolved source-selection findings. External camera data and hardware qualification are documented separately.
+path	finding	required_work

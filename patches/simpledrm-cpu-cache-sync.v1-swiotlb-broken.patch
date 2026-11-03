@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/sysfb/drm_sysfb_helper.h
++++ b/drivers/gpu/drm/sysfb/drm_sysfb_helper.h
+@@ -58,6 +58,8 @@
+  * Display modes
+  */
+ 
++extern bool drm_sysfb_cpu_cache_sync;
++
+ struct drm_display_mode drm_sysfb_mode(unsigned int width,
+ 				       unsigned int height,
+ 				       unsigned int width_mm,
+--- a/drivers/gpu/drm/sysfb/drm_sysfb_modeset.c
++++ b/drivers/gpu/drm/sysfb/drm_sysfb_modeset.c
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ 
++#include <linux/dma-mapping.h>
+ #include <linux/export.h>
++#include <linux/module.h>
++#include <linux/scatterlist.h>
+ #include <linux/slab.h>
+ 
+ #include <drm/drm_atomic.h>
+@@ -12,12 +15,73 @@
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
+ #include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_gem_shmem_helper.h>
+ #include <drm/drm_panic.h>
+ #include <drm/drm_print.h>
+ #include <drm/drm_probe_helper.h>
+ 
+ #include "drm_sysfb_helper.h"
+ 
++/*
++ * Non-coherent GPUs (Exynos9820 Mali-G76) render into shmem-backed dumb
++ * buffers behind the CPU cache. Invalidate the CPU's view of the damaged rows
++ * before the scanout copy reads them, so stale cache lines are not shown.
++ */
++bool drm_sysfb_cpu_cache_sync;
++EXPORT_SYMBOL(drm_sysfb_cpu_cache_sync);
++module_param_named(cpu_cache_sync, drm_sysfb_cpu_cache_sync, bool, 0444);
++MODULE_PARM_DESC(cpu_cache_sync, "Invalidate CPU caches of native shmem buffers before the scanout copy");
++
++static void drm_sysfb_sync_damage_for_cpu(struct drm_framebuffer *fb,
++					  struct drm_plane_state *old_state,
++					  struct drm_plane_state *new_state)
++{
++	struct drm_gem_object *obj = fb->obj[0];
++	struct drm_atomic_helper_damage_iter iter;
++	struct drm_rect damage;
++	struct drm_gem_shmem_object *shmem;
++	struct scatterlist *sg;
++	struct sg_table *sgt;
++	size_t start, end, off = 0;
++	int y1 = INT_MAX, y2 = 0;
++	unsigned int i;
++
++	if (!drm_sysfb_cpu_cache_sync || !obj || drm_gem_is_imported(obj))
++		return;
++
++	drm_atomic_helper_damage_iter_init(&iter, old_state, new_state);
++	drm_atomic_for_each_plane_damage(&iter, &damage) {
++		y1 = min(y1, damage.y1);
++		y2 = max(y2, damage.y2);
++	}
++	if (y2 <= y1)
++		return;
++
++	shmem = to_drm_gem_shmem_obj(obj);
++	sgt = drm_gem_shmem_get_pages_sgt(shmem);
++	if (IS_ERR(sgt))
++		return;
++
++	start = fb->offsets[0] + (size_t)y1 * fb->pitches[0];
++	end = min_t(size_t, fb->offsets[0] + (size_t)y2 * fb->pitches[0], obj->size);
++
++	for_each_sgtable_dma_sg(sgt, sg, i) {
++		size_t len = sg_dma_len(sg);
++
++		if (off >= end)
++			break;
++		if (off + len > start) {
++			size_t lo = max(start, off);
++			size_t hi = min(end, off + len);
++
++			dma_sync_single_for_cpu(obj->dev->dev,
++						sg_dma_address(sg) + (lo - off),
++						hi - lo, DMA_FROM_DEVICE);
++		}
++		off += len;
++	}
++}
++
+ struct drm_display_mode drm_sysfb_mode(unsigned int width,
+ 				       unsigned int height,
+ 				       unsigned int width_mm,
+@@ -351,6 +415,8 @@
+ 	if (!drm_dev_enter(dev, &idx))
+ 		goto out_drm_gem_fb_end_cpu_access;
+ 
++	drm_sysfb_sync_damage_for_cpu(fb, old_plane_state, plane_state);
++
+ 	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
+ 	drm_atomic_for_each_plane_damage(&iter, &damage) {
+ 		struct iosys_map dst = sysfb->fb_addr;
+--- a/drivers/gpu/drm/sysfb/simpledrm.c
++++ b/drivers/gpu/drm/sysfb/simpledrm.c
+@@ -848,8 +848,33 @@
+ 
+ DEFINE_DRM_GEM_FOPS(simpledrm_fops);
+ 
++/*
++ * With cpu_cache_sync, DMA-map new dumb buffers immediately so the freshly
++ * zeroed pages are written back before the GPU renders into them; dirty CPU
++ * lines would otherwise be evicted over GPU-written pixels later.
++ */
++static int simpledrm_dumb_create(struct drm_file *file, struct drm_device *dev,
++				 struct drm_mode_create_dumb *args)
++{
++	struct drm_gem_object *obj;
++	int ret;
++
++	ret = drm_gem_shmem_dumb_create(file, dev, args);
++	if (ret || !drm_sysfb_cpu_cache_sync)
++		return ret;
++
++	obj = drm_gem_object_lookup(file, args->handle);
++	if (obj) {
++		drm_gem_shmem_get_pages_sgt(to_drm_gem_shmem_obj(obj));
++		drm_gem_object_put(obj);
++	}
++
++	return 0;
++}
++
+ static struct drm_driver simpledrm_driver = {
+-	DRM_GEM_SHMEM_DRIVER_OPS,
++	.gem_prime_import	= drm_gem_shmem_prime_import_no_map,
++	.dumb_create		= simpledrm_dumb_create,
+ 	DRM_FBDEV_SHMEM_DRIVER_OPS,
+ 	.name			= DRIVER_NAME,
+ 	.desc			= DRIVER_DESC,

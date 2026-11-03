@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+--- a/data/debayer.frag
++++ b/data/debayer.frag
+@@ -12,16 +12,39 @@
+ varying vec2 bottom_left_uv;
+ varying vec2 bottom_right_uv;
+ 
++/* V4L2 unpacked RAW10 stores each sample in a little-endian 16-bit
++ * word. The input GL_LUMINANCE texture holds the individual bytes. */
++#if defined(FMT_BGGR10) || defined(FMT_GBRG10) || defined(FMT_GRBG10) || defined(FMT_RGGB10)
++#define UNPACKED_RAW10
++uniform float row_length;
++uniform vec2 pixel_size;
++float sample_raw(vec2 uv)
++{
++    float x = floor(uv.x / pixel_size.x) * 2.0;
++    float low = texture2D(texture, vec2((x + 0.5) / row_length, uv.y)).r;
++    float high = texture2D(texture, vec2((x + 1.5) / row_length, uv.y)).r;
++    return (low * 255.0 + high * 65280.0) / 1023.0;
++}
++#endif
++
+ void
+ main()
+ {
+     // Note the coordinates for texture samples need to be a varying, as the
+     // Mali-400 has this as a fast path allowing 32-bit floats. Otherwise
+     // they end up as 16-bit floats and that's not accurate enough.
++    #ifdef UNPACKED_RAW10
++    // The shared vertex shader's top_right/bottom_left names are reversed.
++    vec4 samples = vec4(sample_raw(top_left_uv),
++                        sample_raw(bottom_left_uv),
++                        sample_raw(top_right_uv),
++                        sample_raw(bottom_right_uv));
++    #else
+     vec4 samples = vec4(texture2D(texture, top_left_uv).r,
+     texture2D(texture, top_right_uv).r,
+     texture2D(texture, bottom_left_uv).r,
+     texture2D(texture, bottom_right_uv).r);
++    #endif
+ 
+     #if defined(CFA_BGGR)
+     vec3 color = vec3(samples.w, (samples.y + samples.z) / 2.0, samples.x);

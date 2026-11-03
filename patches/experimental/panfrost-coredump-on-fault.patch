@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_job.c
++++ b/drivers/gpu/drm/panfrost/panfrost_job.c
+@@ -397,6 +397,14 @@
+ 
+ 	drm_sched_job_cleanup(sched_job);
+ 
++	if (job->dump_on_free) {
++		u64 jc = job->jc;
++
++		job->jc = job->fault_jc;
++		panfrost_core_dump(job);
++		job->jc = jc;
++	}
++
+ 	panfrost_job_put(job);
+ }
+ 
+@@ -493,6 +501,9 @@
+ 		 * is good enough for now.
+ 		 */
+ 		dma_fence_set_error(job->done_fence, -EINVAL);
++		/* Defer a core dump to panfrost_job_free() (process context) */
++		job->fault_jc = job->jc;
++		job->dump_on_free = true;
+ 		job->jc = 0;
+ 	}
+ 
+--- a/drivers/gpu/drm/panfrost/panfrost_job.h
++++ b/drivers/gpu/drm/panfrost/panfrost_job.h
+@@ -36,6 +36,9 @@
+ 
+ 	struct panfrost_engine_usage *engine_usage;
+ 	bool is_profiled;
++	/* Exynos 9820 bring-up: dump this job's BOs once it is freed */
++	bool dump_on_free;
++	u64 fault_jc;
+ 	ktime_t start_time;
+ 	u64 start_cycles;
+ };
+--- a/drivers/gpu/drm/panfrost/panfrost_dump.c
++++ b/drivers/gpu/drm/panfrost/panfrost_dump.c
+@@ -114,6 +114,9 @@
+ 
+ 	as_nr = job->mmu->as;
+ 	slot = panfrost_job_get_slot(job);
++	/* A deferred dump may run after the AS was released */
++	if (as_nr < 0)
++		as_nr = 0;
+ 
+ 	/* Only catch the first event, or when manually re-armed */
+ 	if (!panfrost_dump_core)

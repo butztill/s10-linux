@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Original port changes follow the affected upstream file licenses.
+# Existing upstream notices remain authoritative; see docs/public/PROVENANCE.md.
+diff -ruN a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -864,6 +864,18 @@
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("s5k3j1", CameraSensorHelperS5k3j1)
+ 
++class CameraSensorHelperS5k2l4 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5k2l4()
++	{
++		/* Same Samsung register layout as the S5K3P9; black level 64 at 10 bit (raw dark pixels). */
++		blackLevel_ = 4096;
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5k2l4", CameraSensorHelperS5k2l4)
++
+ class CameraSensorHelperVd55g1 : public CameraSensorHelper
+ {
+ public:

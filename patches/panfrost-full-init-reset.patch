@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/gpu/drm/panfrost/panfrost_device.c
++++ b/drivers/gpu/drm/panfrost/panfrost_device.c
+@@ -283,6 +283,11 @@
+ 		goto out_job;
+ 
+ 	panfrost_gem_init(pfdev);
++
++	/* Local Exynos9820 experiment: use the same complete initial state as
++	 * runtime resume, including MMU interrupts, before accepting jobs.
++	 */
++	panfrost_device_reset(pfdev, true);
+ 
+ 	return 0;
+ out_job:

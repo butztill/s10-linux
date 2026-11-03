@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/drivers/s10-abox-asoc/snd-soc-s10-abox.c
++++ b/drivers/s10-abox-asoc/snd-soc-s10-abox.c
+@@ -65,6 +65,10 @@
+ #define S10_PERIOD_MIN		1024
+ #define S10_PERIOD_MAX		4096		/* RBUF_CNT is only 12 bit */
+ 
++static bool use_i2s;
++module_param(use_i2s, bool, 0444);
++MODULE_PARM_DESC(use_i2s, "Use standard I2S instead of DSP-A framing (bring-up comparison)");
++
+ static unsigned int vol_factor = 0x100000;	/* 0x800000 = unity; default -18 dB */
+ module_param(vol_factor, uint, 0644);
+ static unsigned int bottom_slot = 1, receiver_slot;
+@@ -435,7 +439,8 @@
+ 	a->link.num_platforms = 1;
+ 	a->link.codecs = a->codecs;
+ 	a->link.num_codecs = 2;
+-	a->link.dai_fmt = SND_SOC_DAIFMT_DSP_A | SND_SOC_DAIFMT_IB_NF | SND_SOC_DAIFMT_CBC_CFC;
++	a->link.dai_fmt = (use_i2s ? SND_SOC_DAIFMT_I2S : SND_SOC_DAIFMT_DSP_A) |
++		SND_SOC_DAIFMT_IB_NF | SND_SOC_DAIFMT_CBC_CFC;
+ 	a->link.ops = &s10_link_ops;
+ 	a->link.playback_only = 1;
+ 	a->card.name = "S10";

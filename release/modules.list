@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Reviewed source module set. Sensor runtime data is externally supplied.
+drivers/exynos9820-pcie-test
+drivers/max77705-pd-test
+drivers/max77705-typec
+drivers/s10-abox-asoc
+drivers/s10-acpm-inventory
+drivers/s10-audio-test
+drivers/s10-c2-abort-test
+drivers/s10-camera-control
+drivers/s10-cpuhp-trace
+drivers/s10-devfreq-cooling
+drivers/s10-gpu-clock-test
+drivers/s10-gpu-regs
+drivers/s10-mic
+drivers/s10-mif-dvfs
+drivers/s10-nfc-clkout
+drivers/s10-pmic-int
+drivers/s10-ramoops-snapshot
+drivers/s10-uart-bt-mode
+drivers/s10-uhlog
+drivers/s2mpb02-camera-test
+userspace/modem/boot
+userspace/modem/tty
+drivers/s10-camera-v4l2

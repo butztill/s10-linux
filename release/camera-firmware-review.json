@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "date": "2026-11-03",
+  "scope": "Source-only external-runtime-data migration; no device deployment or hardware qualification.",
+  "source_files": [
+    {
+      "path": "drivers/s10-camera-v4l2/s5k-cis.c",
+      "sha256": "e0b052656af1ebbece37f9328b7bb53446a798e7375e520b368512d28b38d9a0"
+    },
+    {
+      "path": "drivers/s10-camera-v4l2/s5k-fw.h",
+      "sha256": "d2b68a67eb8e1427f43895ed4b29f2c7492c6dda193642a1d28affda9fb6a13c"
+    },
+    {
+      "path": "drivers/s10-camera-v4l2/s5k-fw-manifest.h",
+      "sha256": "a1c142d1aec8c047924d6b33929bbd28cdb8082ba164f0bcd7614ce016e702d2"
+    },
+    {
+      "path": "scripts/prepare-s5k-firmware.py",
+      "sha256": "c9048244da865bbb5974afcb9dcb148f696b0210e220004f0f7be4f55e56c5d8"
+    },
+    {
+      "path": "scripts/prepare-s5k-tables.py",
+      "sha256": "6ecd710271d42ea2407c67a061a30c476fd7895705bb8df35c00b659a2e47635"
+    },
+    {
+      "path": "tests/test_sensor_firmware.py",
+      "sha256": "240a3cfe5d85b304863c1df541d81e8741c3bf256bd9f676f071ebe19b17444a"
+    }
+  ],
+  "stream_checks": [
+    {
+      "model": "s5k3p9",
+      "tables": 3,
+      "register_operations": 113,
+      "bursts": 1,
+      "bytes": 1195,
+      "sha256": "23632888525d5cb24cf3a4fdb5cede3065eb7f445e291a9aa3f3bf7dde662a9c",
+      "production_c_parser_and_decoder_match_original_tables": true
+    },
+    {
+      "model": "s5k3m3",
+      "tables": 3,
+      "register_operations": 152,
+      "bursts": 1,
+      "bytes": 1658,
+      "sha256": "d7241d42d337511c98c7bc51a1d2f5aa3ba9fea4c21f04242f83cb2dc9dc5134",
+      "production_c_parser_and_decoder_match_original_tables": true
+    },
+    {
+      "model": "s5k3j1",
+      "tables": 4,
+      "register_operations": 745,
+      "bursts": 1,
+      "bytes": 4207,
+      "sha256": "ef8decfa6393ee9729d725e5fb2aa366391accde0d8bc24ac309041320c85c89",
+      "production_c_parser_and_decoder_match_original_tables": true
+    },
+    {
+      "model": "s5k2l4",
+      "tables": 3,
+      "register_operations": 997,
+      "bursts": 2,
+      "bytes": 9057,
+      "sha256": "b9a47b96c8068aebd0d386c942a53f63c78a17218edb08969374dad395a61239",
+      "production_c_parser_and_decoder_match_original_tables": true
+    }
+  ],
+  "arm64_build": "All seven camera modules compiled against the existing 7.2.0-rc2 development build. Compiler 23.1.4 differs from the recorded kernel compiler 23.1.3; no installed-image ABI claim.",
+  "host_validation": "Production C validator and extracted actual driver decoder tested; ASan/UBSan sweep exercised 1459200 mutation/truncation cases (2370 accepted); leak scanning disabled due sandbox ptrace restriction.",
+  "runtime_data": "Four .s5k files remain private/external. No program/register payload is included in the public metadata header.",
+  "device_status": "New loader not installed, loaded or tested on the S10."
+}
